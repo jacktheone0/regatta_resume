@@ -1,0 +1,277 @@
+import csv
+import argparse
+import logging
+from datetime import datetime, timezone
+from typing import List, Dict, Tuple, Optional
+
+import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+
+# ----------------------------
+# CLI args
+# ----------------------------
+def parse_args():
+    p = argparse.ArgumentParser(description="Clubspot regatta results searcher (date-range aware)")
+    p.add_argument("--name", default="Christopher Fulton", help="Target sailor name (case-insensitive)")
+    p.add_argument("--max", type=int, default=250, help="Max regattas to check (after filtering/sorting)")
+    p.add_argument("--contains", default="", help="Only check regattas whose name contains keyword(s), comma-separated")
+    p.add_argument("--timeout", type=int, default=12, help="Seconds to wait for results tables")
+
+    # New: explicit date window in YYYY-MM-DD (UTC, inclusive)
+    p.add_argument("--start_date", default=None, help="Only include regattas with startDate >= this date (YYYY-MM-DD)")
+    p.add_argument("--end_date", default=None, help="Only include regattas with startDate <= this date (YYYY-MM-DD)")
+    return p.parse_args()
+
+
+# ----------------------------
+# Logging setup
+# ----------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("resume.log", mode="w", encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
+
+
+# ----------------------------
+# Clubspot API request
+# ----------------------------
+HEADERS = {
+    "Content-Type": "text/plain",
+    "Origin": "https://theclubspot.com",
+    "Referer": "https://theclubspot.com/events",
+    "User-Agent": "Mozilla/5.0",
+}
+
+DATA = {
+    "where": {
+        "archived": {"$ne": True},
+        "public": True,
+        "clubObject": {"$nin": ["HCyTbbCF4n", "XVgOrNASDY", "ecNpKgrusD", "GTKaJKeque", "TTBnsppUug", "pnBFlwJ2Mf"]},
+    },
+    "include": "clubObject",
+    "keys": "objectId,name,startDate,endDate,clubObject.id,clubObject.name",
+    "count": 1,
+    "limit": 15000,
+    "order": "-startDate",
+    "_method": "GET",
+    "_ApplicationId": "myclubspot2017",
+    "_ClientVersion": "js4.3.1-forked-1.0",
+    "_InstallationId": "ce500aaa-c2a0-4d06-a9e3-1a558a606542",
+}
+
+
+def fetch_regattas() -> List[Dict]:
+    resp = requests.post("https://theclubspot.com/parse/classes/regattas",
+                         headers=HEADERS, json=DATA, timeout=45)
+    resp.raise_for_status()
+    payload = resp.json()
+    return payload.get("results", [])
+
+
+def parse_iso_date(d: Optional[str]) -> datetime:
+    """Parse Clubspot's ISO string ('...Z') into timezone-aware UTC datetime."""
+    if not d:
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+    try:
+        return datetime.fromisoformat(d.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def parse_cli_date(d: Optional[str]) -> Optional[datetime]:
+    """Parse YYYY-MM-DD into UTC midnight inclusive bound."""
+    if not d:
+        return None
+    return datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+
+# ----------------------------
+# Selenium driver tuned for speed
+# ----------------------------
+def make_driver() -> webdriver.Chrome:
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--blink-settings=imagesEnabled=false")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--log-level=3")
+    options.page_load_strategy = "eager"
+
+    driver = webdriver.Chrome(options=options)
+    driver.set_page_load_timeout(30)
+    return driver
+
+
+# ----------------------------
+# Extract all sailors from results page
+# ----------------------------
+def extract_all_sailors(driver: webdriver.Chrome, timeout: int) -> List[str]:
+    """Return a list of all sailor rows from all tables on the page."""
+    try:
+        WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table"))
+        )
+    except TimeoutException:
+        return []
+
+    sailors = []
+    tables = driver.find_elements(By.CSS_SELECTOR, "table")
+    for t in tables:
+        try:
+            rows = t.find_elements(By.CSS_SELECTOR, "tbody tr")
+            for row in rows:
+                txt = row.text.strip()
+                if txt:
+                    sailors.append(txt)
+        except Exception:
+            continue
+    return sailors
+
+
+# ----------------------------
+# Main
+# ----------------------------
+def main():
+    args = parse_args()
+    target_name = args.name.strip()
+    keywords = [kw.strip().lower() for kw in args.contains.split(",") if kw.strip()]
+
+    # Date window
+    start_bound = parse_cli_date(args.start_date)
+    end_bound = parse_cli_date(args.end_date)
+
+    logging.info("Pulling regattas list...")
+    all_regs = fetch_regattas()
+    logging.info(f"Fetched {len(all_regs)} total regattas from API.")
+
+    # Step 1: Apply date filtering only
+    all_in_window = []
+    seen_ids = set()
+
+    for r in all_regs:
+        rid = r.get("objectId")
+        if not rid or rid in seen_ids:
+            continue
+        seen_ids.add(rid)
+
+        name = r.get("name") or "Unnamed Regatta"
+        club = (r.get("clubObject") or {}).get("name", "")
+
+        start_iso = (r.get("startDate") or {}).get("iso")
+        end_iso = (r.get("endDate") or {}).get("iso")
+
+        start = parse_iso_date(start_iso)
+        end = parse_iso_date(end_iso)
+
+        if start_bound and start < start_bound:
+            continue
+        if end_bound and start > end_bound:
+            continue
+
+        all_in_window.append(
+            {"objectId": rid, "name": name, "club": club, "start": start, "end": end}
+        )
+
+    # Save regattas in timeframe
+    with open("regattas_in_window.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["Regatta Name", "Club", "Start Date (UTC)", "End Date (UTC)", "Results URL"])
+        for r in all_in_window:
+            url = f"https://theclubspot.com/regatta/{r['objectId']}/results"
+            w.writerow([r["name"], r["club"], r["start"].strftime("%Y-%m-%d"),
+                        r["end"].strftime("%Y-%m-%d"), url])
+
+    logging.info(f"Saved {len(all_in_window)} regattas in timeframe to regattas_in_window.csv")
+
+    # Step 2: Apply keyword filtering
+    if keywords:
+        filtered = [r for r in all_in_window if any(kw in r["name"].lower() for kw in keywords)]
+    else:
+        filtered = all_in_window
+
+    filtered.sort(key=lambda x: x["start"], reverse=True)
+    regattas = filtered[: args.max]
+
+    window_desc = []
+    if start_bound:
+        window_desc.append(f">= {start_bound.date()}")
+    if end_bound:
+        window_desc.append(f"<= {end_bound.date()}")
+    window_text = " and ".join(window_desc) if window_desc else "all dates"
+
+    logging.info(f"Will check {len(regattas)} regattas in window [{window_text}] (keywords={keywords}).")
+
+    driver = make_driver()
+    searched_rows = []
+    matches = []
+
+    try:
+        for idx, r in enumerate(regattas, 1):
+            rid = r["objectId"]
+            url = f"https://theclubspot.com/regatta/{rid}/results"
+            name = r["name"]
+            club = r["club"] or ""
+            start_str = r["start"].strftime("%Y-%m-%d")
+
+            logging.info(f"[{idx:03}/{len(regattas)}] Checking: {name} | {club} | {start_str}")
+
+            try:
+                driver.get(url)
+            except (TimeoutException, WebDriverException):
+                status = "page_load_error"
+                searched_rows.append([idx, name, club, start_str, url, status, 0])
+                logging.warning(f"    ⚠️  {status}")
+                continue
+
+            sailors = extract_all_sailors(driver, timeout=args.timeout)
+            found = any(target_name.lower() in s.lower() for s in sailors)
+            status = "FOUND" if found else "name_not_found"
+
+            searched_rows.append([idx, name, club, start_str, url, status, len(sailors)])
+            logging.info(f"    {status} | {len(sailors)} sailors extracted")
+
+            # Save sailors for this regatta
+            with open(f"sailors_{idx:03}.csv", "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["Regatta Name", "Club", "Start Date (UTC)", "Row Text"])
+                for s in sailors:
+                    w.writerow([name, club, start_str, s])
+
+            if found:
+                matches.append([name, club, start_str, url])
+                logging.info(f"    ✅ Found '{target_name}'")
+
+    finally:
+        driver.quit()
+
+    # Audit CSV
+    with open("searched_regattas.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["#", "Regatta Name", "Club", "Start Date (UTC)", "Results URL", "Status", "Sailors Extracted"])
+        w.writerows(searched_rows)
+
+    # Hits CSV
+    with open("matches.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["Regatta Name", "Club", "Start Date (UTC)", "Results URL"])
+        w.writerows(matches)
+
+    logging.info("=== Summary ===")
+    logging.info(f"Searched: {len(searched_rows)} regattas (see searched_regattas.csv).")
+    logging.info(f"Matches for '{target_name}': {len(matches)} (see matches.csv).")
+
+
+if __name__ == "__main__":
+    main()

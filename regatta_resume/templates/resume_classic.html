@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ sailor_name }}'s Regatta Résumé</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 0px;
+    } 
+      /* Prevent table rows from splitting across pages */
+tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+}
+
+/* Ensure table cells don't split their content */
+td, th {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    vertical-align: top; /* Keeps content uniform at the top of the cell */
+}
+
+/* Optional: Prevent the entire table from splitting if it's small enough */
+table {
+    break-inside: auto; /* Standard behavior for the table itself */
+    border-collapse: collapse;
+}
+
+/* Keep headers together with the first few rows */
+h3, h4 {
+    break-after: avoid;
+    page-break-after: avoid;
+}
+    body {
+      font-family: Arial, sans-serif;
+      margin: 40px;
+      color: #333;
+    }
+
+    h1 {
+      text-align: center;
+      color: #0077cc;
+    }
+
+    .contact {
+      text-align: center;
+      font-size: 14px;
+      color: #666;
+    }
+
+    hr {
+      margin: 20px 0;
+    }
+
+    h3, h4 {
+      text-align: center;
+      margin-top: 30px;
+      color: #0077cc;
+    }
+
+    .team {
+      margin: 20px 0;
+    }
+
+    .team-name {
+      color: #0077cc;
+      font-weight: bold;
+    }
+
+    .year {
+      float: right;
+      font-size: 14px;
+      color: #555;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 15px 0;
+    }
+
+    th, td {
+      border: 1px solid #ccc;
+      padding: 8px 10px;
+      text-align: center;
+      font-size: 14px;
+    }
+
+    th {
+      font-style: italic;
+      color: #333;
+      background-color: #f2f2f2;
+    }
+
+    /* Per-table color blocking (like your example) */
+    .table-gray tbody tr {
+      background-color: #e0e0e0;
+    }
+    .table-blue tbody tr {
+      background-color: #d8ecff;
+    }
+
+    /* Status + edit feedback (for regatta tables) */
+    .statusbar {
+      text-align: center;
+      margin: 10px 0 18px;
+      color: #666;
+      font-size: 0.9rem;
+    }
+    .row-dirty {
+      transition: background 0.4s ease;
+      box-shadow: inset 0 0 0 1px #ffa50066;
+    }
+    .cell-saving::after { content: ' ⏳'; opacity: 0.6; }
+    .cell-saved::after  { content: ' ✅'; opacity: 0.8; }
+
+    .download-link {
+      display: inline-block;
+      text-decoration: none;
+      border: 1px solid #0077cc;
+      padding: 8px 16px;
+      border-radius: 4px;
+      color: #0077cc;
+      transition: 0.2s ease;
+      text-align: center;
+      font-size: 14px;
+      margin-top: 20px;
+      background-color: #f2f8ff;
+    }
+    .download-link:hover {
+      background-color: #0077cc;
+      color: #fff;
+    }
+
+    /* Back to style selection button (top-left) */
+    .back-link {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      text-decoration: none;
+      border: 1px solid #0077cc;
+      padding: 6px 12px;
+      border-radius: 4px;
+      color: #0077cc;
+      font-size: 13px;
+      background-color: #f2f8ff;
+      transition: 0.2s ease;
+    }
+    .back-link:hover {
+      background-color: #0077cc;
+      color: #fff;
+    }
+        /* Placeholder behavior for Sailing Teams cells */
+    .teams-table td[contenteditable="true"][data-placeholder]:empty::before {
+      content: attr(data-placeholder);
+      color: #999;
+      pointer-events: none;
+    }
+
+  </style>
+</head>
+<body>
+  {% if not pdfrender %}
+  <div class="pdfrender-exeption">  <!-- Fixed: Added the missing '>' here -->
+    <a href="{{ url_for('pdf_select', sailor_name=sailor_name) }}" class="back-link">
+      ← Return to Style Selection
+    </a>
+  </div>                           <!-- Added: You must close the div -->
+{% endif %}
+
+  <!-- Header -->
+  <h1>{{ sailor_name }}</h1>
+  <div class="contact">
+    <span contenteditable="true">[Class Year]</span> |
+    <span contenteditable="true">[Email]</span> |
+    <span contenteditable="true">[Phone Number]</span>
+  </div>
+
+  <hr>
+
+  <!-- =========================
+       SAILING TEAMS (EDITABLE)
+       ========================= -->
+  <h3>Sailing Teams</h3>
+
+  <!-- Purely front-end editable table; NOT tied to any previous input -->
+    <table class="teams-table table-gray">
+    <thead>
+      <tr>
+        <th>Team</th>
+        <th>Years</th>
+        <th>Role</th>
+        <th>Notes / Highlights</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td contenteditable="true" data-placeholder="Harvard Sailing Team"></td>
+        <td contenteditable="true" data-placeholder="2022–Present"></td>
+        <td contenteditable="true" data-placeholder="Skipper / Crew"></td>
+        <td contenteditable="true" data-placeholder="Key regattas, championships, leadership"></td>
+      </tr>
+      <tr>
+        <td contenteditable="true" data-placeholder="Oakcliff Sailing"></td>
+        <td contenteditable="true" data-placeholder="Summer 2024"></td>
+        <td contenteditable="true" data-placeholder="Offshore Program"></td>
+        <td contenteditable="true" data-placeholder="Training, IOR, notable podiums"></td>
+      </tr>
+      <tr>
+        <td contenteditable="true" data-placeholder="High School Team"></td>
+        <td contenteditable="true" data-placeholder="2018–2022"></td>
+        <td contenteditable="true" data-placeholder="Captain"></td>
+        <td contenteditable="true" data-placeholder="States, nationals, awards"></td>
+      </tr>
+      <tr>
+        <td contenteditable="true" data-placeholder="Add Team"></td>
+        <td contenteditable="true" data-placeholder=""></td>
+        <td contenteditable="true" data-placeholder=""></td>
+        <td contenteditable="true" data-placeholder=""></td>
+      </tr>
+    </tbody>
+  </table>
+
+
+  <!-- Save status (applies to regatta tables below) -->
+  <div class="statusbar">
+    <span id="saveStatus">Click a regatta cell below to edit. Press <b>Enter</b> or click away to save.</span>
+  </div>
+
+  <!-- =========================
+       REGATTA RESULTS (EDITABLE & PERSISTED)
+       ========================= -->
+  <h3>Regatta Results</h3>
+
+  {% if techscore_rows %}
+    <h4>Techscore Regattas</h4>
+    <!-- Gray block table -->
+    <table class="results-table table-gray">
+      <thead>
+        <tr>
+          <th>"Class"</th>
+          <th>"Regatta"</th>
+          <th>"Date"</th>
+          <th>"Place"</th>
+          <th>"Position"</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in techscore_rows %}
+        <tr data-rowid="{{ row.RowID }}">
+          <!-- ORDER here MUST match FIELD_ORDER -->
+          <td contenteditable="true">{{ row.Source or '' }}</td>
+          <td contenteditable="true">{{ row.Regatta or '' }}</td>
+          <td contenteditable="true">{{ row.Date or '' }}</td>
+          <td contenteditable="true">{{ row.Place or '' }}</td>
+          <td contenteditable="true">{{ row.Result or '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+
+  {% if clubspot_rows %}
+    <h4>Clubspot Regattas</h4>
+    <!-- Blue block table -->
+    <table class="results-table table-blue">
+      <thead>
+        <tr>
+          <th>"Class"</th>
+          <th>"Regatta"</th>
+          <th>"Date"</th>
+          <th>"Place"</th>
+          <th>"Position"</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in clubspot_rows %}
+        <tr data-rowid="{{ row.RowID }}">
+          <td contenteditable="true">{{ row.Source or '' }}</td>
+          <td contenteditable="true">{{ row.Regatta or '' }}</td>
+          <td contenteditable="true">{{ row.Date or '' }}</td>
+          <td contenteditable="true">{{ row.Place or '' }}</td>
+          <td contenteditable="true">{{ row.Result or '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+
+  {% if not techscore_rows and not clubspot_rows %}
+    <p style="text-align:center; margin-top:20px;">No regatta data to display.</p>
+  {% endif %}
+
+  {% if not pdfrender %}
+  <div style="text-align:center;">
+      <a id="downloadLink"
+         href="{{ url_for('download_pdf', sailor_name=sailor_name) }}"
+         class="download-link">
+        📄 Download Résumé as PDF
+      </a>
+  </div>
+  {% endif %}
+
+    <script>
+    // 0: Source, 1: Regatta, 2: Date, 3: Place, 4: Result
+    const FIELD_ORDER = ["Source","Regatta","Date","Place","Result"];
+    const saveStatus = document.getElementById('saveStatus');
+
+    function postEdit(rowId, field, value) {
+      saveStatus.textContent = `Saving row ${rowId}…`;
+      return fetch('/apply-edits', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ edits: [{ row: rowId, field, value }] })
+      }).then(async (res) => {
+        let data = {};
+        try { data = await res.json(); } catch (_) {}
+        if (!res.ok || !data.ok) {
+          const msg = (data && data.error) ? data.error : `HTTP ${res.status}`;
+          throw new Error(msg);
+        }
+        saveStatus.textContent = 'Saved ✓';
+        setTimeout(() => {
+          saveStatus.textContent = 'Click a regatta cell below to edit. Press Enter or click away to save.';
+        }, 1200);
+      });
+    }
+
+    function saveCell(td) {
+      const tr = td.closest('tr[data-rowid]');
+      if (!tr) return;
+
+      const rowId = parseInt(tr.dataset.rowid, 10);
+      const cellIndex = Array.prototype.indexOf.call(tr.children, td);
+      const field = FIELD_ORDER[cellIndex];
+      if (!Number.isInteger(rowId) || !field) return;
+
+      const value = (td.innerText || '').trim();
+      td.classList.add('cell-saving');
+
+      postEdit(rowId, field, value)
+        .then(() => {
+          tr.classList.add('row-dirty');
+          td.classList.remove('cell-saving');
+          td.classList.add('cell-saved');
+          setTimeout(() => {
+            tr.classList.remove('row-dirty');
+            td.classList.remove('cell-saved');
+          }, 800);
+        })
+        .catch(err => {
+          td.classList.remove('cell-saving');
+          alert('Save failed: ' + err.message);
+        });
+    }
+
+    // Save on Enter for regatta tables only
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const td = e.target.closest('td[contenteditable="true"]');
+        if (!td || !td.closest('table.results-table')) return;
+        e.preventDefault();
+        saveCell(td);
+        td.blur();
+      }
+    });
+
+    // Save on blur for regatta tables only
+    document.addEventListener('focusout', (e) => {
+      const td = e.target.closest('td[contenteditable="true"]');
+      if (!td || !td.closest('table.results-table')) return;
+      saveCell(td);
+    });
+  </script>
+
+  <script>
+    const downloadLink = document.getElementById('downloadLink');
+
+    async function saveAllAndGoToStyle(e) {
+      e.preventDefault();
+      const href = downloadLink.getAttribute('href');
+
+      const rows = Array.from(document.querySelectorAll('table.results-table tbody tr'));
+      const edits = [];
+
+      rows.forEach(tr => {
+        const rowId = parseInt(tr.dataset.rowid, 10);
+        if (!Number.isInteger(rowId)) return;
+
+        Array.from(tr.children).forEach((td, idx) => {
+          const field = FIELD_ORDER[idx];
+          if (!field) return;
+          const value = (td.innerText || '').trim();
+          edits.push({ row: rowId, field, value });
+        });
+      });
+
+      if (edits.length === 0) {
+        window.location.href = href;
+        return;
+      }
+
+      downloadLink.classList.add('disabled');
+      downloadLink.style.pointerEvents = 'none';
+      saveStatus.textContent = 'Saving all changes…';
+
+      try {
+        const res = await fetch('/apply-edits', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ edits })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          const msg = (data && data.error) ? data.error : `HTTP ${res.status}`;
+          alert('Save failed: ' + msg);
+          saveStatus.textContent = 'Save failed.';
+          downloadLink.classList.remove('disabled');
+          downloadLink.style.pointerEvents = '';
+          return;
+        }
+
+        saveStatus.textContent = 'All changes saved ✓';
+        window.location.href = href;
+
+        setTimeout(() => {
+          downloadLink.classList.remove('disabled');
+          downloadLink.style.pointerEvents = '';
+        }, 2000);
+
+      } catch (err) {
+        alert('Save failed: ' + (err?.message || err));
+        saveStatus.textContent = 'Save failed.';
+        downloadLink.classList.remove('disabled');
+        downloadLink.style.pointerEvents = '';
+      }
+    }
+
+    downloadLink.addEventListener('click', saveAllAndGoToStyle);
+  </script>
+
+</body>
+</html>

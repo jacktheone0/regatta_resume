@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ sailor_name }}'s Résumé</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --primary: #084575;
+      --background: #f3efd5;
+      --card: #ffffff;
+      --text: #1a1a1a;
+      --border: #ddd;
+      --radius: 10px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; }
+    body { background-color: var(--background); color: var(--text); display: flex; justify-content: center; padding: 2rem; }
+    .container { width: 100%; max-width: 900px; background: var(--card); padding: 2rem; border-radius: var(--radius); box-shadow: 0 6px 16px rgba(0,0,0,.05); }
+    h1 { font-size: 2rem; margin-bottom: 1.5rem; color: var(--primary); text-align: center; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; }
+    thead { background-color: #e0f4ff; }
+    th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { font-weight: 600; color: #084575; }
+    tr:hover { background-color: #f9fcff; }
+    a.download-link { display: inline-block; text-decoration: none; border: 2px solid var(--primary); padding: 0.6rem 1.2rem; border-radius: var(--radius); color: var(--primary); transition: .2s ease; text-align: center; font-weight: 500; }
+    a.download-link:hover { background-color: var(--primary); color: #fff; }
+    .statusbar { display: flex; gap: .75rem; align-items: center; justify-content: center; margin: 10px 0 18px; color: #666; font-size: .9rem; }
+    .row-dirty { background: #fff4d6 !important; transition: background .4s ease; }
+    .cell-saving::after { content: ' ⏳'; opacity: .6; }
+    .cell-saved::after  { content: ' ✅'; opacity: .8; }
+    @media (max-width: 600px) { th, td { font-size: 0.9rem; padding: 0.5rem; } .container { padding: 1rem; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>{{ sailor_name }}'s Résumé</h1>
+
+
+    <div class="statusbar">
+      <span id="saveStatus">Click a cell to edit. Press <b>Enter</b> or click away to save.</span>
+    </div>
+
+
+    <table id="resultsTable">
+      <thead>
+        <tr>
+          <th>Class</th>
+          <th>Regatta</th>
+          <th>Date</th>
+          <th>Place</th>
+          <th>Position</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in tables %}
+        <tr data-rowid="{{ row.RowID if row.RowID is defined else loop.index0 }}">
+          <!-- Editable cells: order MUST match FIELD_ORDER in JS -->
+          <td contenteditable="true">{{ row.Source }}</td>
+          <td contenteditable="true">{{ row.Regatta }}</td>
+          <td contenteditable="true">{{ row.Date }}</td>
+          <td contenteditable="true">{{ row.Place }}</td>
+          <td contenteditable="true">{{ row.Result }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+
+    <div style="text-align:center;">
+    <a id="downloadLink" href="{{ url_for('pdf_select', sailor_name=sailor_name) }}" class="download-link">
+  📄 Select Résumé style
+    </a>
+
+
+    </div>
+
+
+  </div>
+
+
+  <script>
+    // Column mapping aligned with the TD order above:
+    // 0: Source, 1: Regatta, 2: Date, 3: Place, 4: Result
+    const FIELD_ORDER = ["Source","Regatta","Date","Place","Result"];
+    const table = document.getElementById('resultsTable');
+    const saveStatus = document.getElementById('saveStatus');
+
+
+    function postEdit(rowId, field, value) {
+      saveStatus.textContent = `Saving row ${rowId}…`;
+      return fetch('/apply-edits', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ edits: [{ row: rowId, field, value }] })
+      }).then(async (res) => {
+        let data = {};
+        try { data = await res.json(); } catch (_) {}
+        if (!res.ok || !data.ok) {
+          const msg = (data && data.error) ? data.error : `HTTP ${res.status}`;
+          throw new Error(msg);
+        }
+        saveStatus.textContent = 'Saved ✓';
+        setTimeout(() => (saveStatus.textContent = 'Click a cell to edit. Press Enter or click away to save.'), 1200);
+      });
+    }
+
+
+    function saveCell(td) {
+      const tr = td.closest('tr');
+      const rowId = parseInt(tr.dataset.rowid, 10);
+      const cellIndex = Array.prototype.indexOf.call(tr.children, td);
+      const field = FIELD_ORDER[cellIndex];
+      if (!Number.isInteger(rowId) || !field) return;
+
+
+      const value = td.innerText.trim();
+      td.classList.add('cell-saving');
+
+
+      postEdit(rowId, field, value)
+        .then(() => {
+          tr.classList.add('row-dirty');
+          td.classList.remove('cell-saving');
+          td.classList.add('cell-saved');
+          setTimeout(() => {
+            tr.classList.remove('row-dirty');
+            td.classList.remove('cell-saved');
+          }, 800);
+        })
+        .catch(err => {
+          td.classList.remove('cell-saving');
+          alert('Save failed: ' + err.message);
+        });
+    }
+
+
+    // Save on Enter (prevent newline)
+    table.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const td = e.target.closest('td[contenteditable="true"]');
+        if (!td) return;
+        e.preventDefault();
+        saveCell(td);
+        td.blur();
+      }
+    });
+
+
+    // Save on blur
+    table.addEventListener('focusout', (e) => {
+      const td = e.target.closest('td[contenteditable="true"]');
+      if (!td) return;
+      saveCell(td);
+    });
+  </script>
+  <script>
+  const downloadLink = document.getElementById('downloadLink');
+
+
+  async function saveAllAndDownload(e) {
+  e.preventDefault();
+  const href = downloadLink.getAttribute('href');
+
+
+  const rows = Array.from(table.querySelectorAll('tbody tr'));
+  const edits = [];
+
+
+  rows.forEach(tr => {
+    const rowId = parseInt(tr.dataset.rowid, 10);
+    if (!Number.isInteger(rowId)) return;
+
+
+    Array.from(tr.children).forEach((td, idx) => {
+      const field = FIELD_ORDER[idx];
+      if (!field) return;
+      const value = (td.innerText || '').trim();
+      edits.push({ row: rowId, field, value });
+    });
+  });
+
+
+  if (edits.length === 0) {
+    window.location.href = href;
+    return;
+  }
+
+
+  downloadLink.classList.add('disabled');
+  downloadLink.style.pointerEvents = 'none';
+  saveStatus.textContent = 'Saving all changes…';
+
+
+  try {
+    const res = await fetch('/apply-edits', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ edits })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      const msg = (data && data.error) ? data.error : `HTTP ${res.status}`;
+      alert('Save failed: ' + msg);
+      saveStatus.textContent = 'Save failed.';
+      downloadLink.classList.remove('disabled');
+      downloadLink.style.pointerEvents = '';
+      return;
+    }
+
+
+    saveStatus.textContent = 'All changes saved ✓';
+    window.location.href = href;
+
+
+    // 🔑 re-enable so it works again on the next click
+    setTimeout(() => {
+      downloadLink.classList.remove('disabled');
+      downloadLink.style.pointerEvents = '';
+    }, 2000);
+
+
+  } catch (err) {
+    alert('Save failed: ' + (err?.message || err));
+    saveStatus.textContent = 'Save failed.';
+    downloadLink.classList.remove('disabled');
+    downloadLink.style.pointerEvents = '';
+  }
+}
+
+
+
+
+  downloadLink.addEventListener('click', saveAllAndDownload);
+</script>
+
+
+</body>
+</html>
