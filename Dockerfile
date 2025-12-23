@@ -58,13 +58,15 @@ RUN CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/
 WORKDIR /app
 
 # Copy requirements first for better caching
-COPY regatta_resume/requirements.txt .
+COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY regatta_resume/ .
+COPY *.py .
+COPY templates/ templates/
+COPY static/ static/
 
 # Create necessary directories
 RUN mkdir -p static/resumes && \

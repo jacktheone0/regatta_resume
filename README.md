@@ -110,23 +110,33 @@ SCRAPER_TIMEOUT=12
 ```
 regatta_resume/
 ├── app.py                  # Main Flask application
-├── Resume.py              # Clubspot scraper (Selenium)
-├── scraper.py             # Techscore scraper (requests + BeautifulSoup)
-├── resume_pdf.py          # PDF generation functions
-├── requirements.txt       # Python dependencies
-├── templates/             # HTML templates
-│   ├── index.html        # Landing page
-│   ├── loading.html      # Progress page
-│   ├── resume.html       # Results editor
+├── Resume.py               # Clubspot scraper (Selenium)
+├── scraper.py              # Techscore scraper (requests + BeautifulSoup)
+├── resume_pdf.py           # PDF generation functions
+├── config.py               # Configuration management
+├── validators.py           # Input validation
+├── logger.py               # Logging utilities
+├── requirements.txt        # Python dependencies
+├── Dockerfile              # Docker image definition
+├── docker-compose.yml      # Docker Compose configuration
+├── pytest.ini              # Testing configuration
+├── .env.example            # Environment variables template
+├── templates/              # HTML templates
+│   ├── index.html         # Landing page
+│   ├── loading.html       # Progress page
+│   ├── resume.html        # Results editor
 │   ├── resume_classic.html
 │   ├── resume_modern.html
 │   └── resume_minimalist.html
-├── static/               # Static assets and generated files
-│   └── resumes/         # Pre-built PDFs
-├── results.csv           # Clubspot scrape results
-├── scraper_df.csv        # Techscore scrape results
-├── teams.csv             # Team history data
-└── matches.csv           # Matched regattas log
+├── static/                 # Static assets and generated files
+│   └── resumes/           # Pre-built PDFs
+├── tests/                  # Unit tests
+│   ├── test_validators.py
+│   └── test_scraper.py
+├── results.csv             # Clubspot scrape results (generated)
+├── scraper_df.csv          # Techscore scrape results (generated)
+├── teams.csv               # Team history data (generated)
+└── matches.csv             # Matched regattas log (generated)
 ```
 
 ## Data Sources

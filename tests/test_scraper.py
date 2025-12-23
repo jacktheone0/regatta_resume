@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 # Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent / 'regatta_resume'))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scraper import build_sailor_url, expand_result_fields
 

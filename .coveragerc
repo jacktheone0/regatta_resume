@@ -1,0 +1,19 @@
+[run]
+source = .
+omit =
+    */tests/*
+    */venv/*
+    */env/*
+    */__pycache__/*
+    */OLD_THINGS(FORIA)/*
+    setup.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise AssertionError
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    @abstractmethod

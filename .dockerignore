@@ -25,12 +25,12 @@ ENV/
 .env.local
 
 # Data files (will be mounted as volumes)
-regatta_resume/results.csv
-regatta_resume/matches.csv
-regatta_resume/scraper_df.csv
-regatta_resume/teams.csv
-regatta_resume/static/resume.pdf
-regatta_resume/static/resumes/*.pdf
+results.csv
+matches.csv
+scraper_df.csv
+teams.csv
+static/resume.pdf
+static/resumes/*.pdf
 
 # Logs
 *.log
@@ -46,7 +46,7 @@ tests/
 docs/
 
 # Old files
-regatta_resume/OLD_THINGS(FORIA)/
+OLD_THINGS(FORIA)/
 
 # macOS
 .DS_Store
