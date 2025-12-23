@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+venv/
+env/
+ENV/
+.venv
+
+# Flask
+instance/
+.webassets-cache
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project specific
+regatta_resume/results.csv
+regatta_resume/matches.csv
+regatta_resume/all_rows.csv
+regatta_resume/searched_regattas.csv
+regatta_resume/found_names.csv
+regatta_resume/scraper_df.csv
+regatta_resume/teams.csv
+regatta_resume/checked_names_log.txt
+regatta_resume/checked_sailors_log.txt
+regatta_resume/static/resume.pdf
+regatta_resume/static/resumes/*.pdf
+
+# Logs
+*.log
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ChromeDriver
+chromedriver
+chromedriver.exe

@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+
+# Data files (will be mounted as volumes)
+regatta_resume/results.csv
+regatta_resume/matches.csv
+regatta_resume/scraper_df.csv
+regatta_resume/teams.csv
+regatta_resume/static/resume.pdf
+regatta_resume/static/resumes/*.pdf
+
+# Logs
+*.log
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
+
+# Documentation
+*.md
+docs/
+
+# Old files
+regatta_resume/OLD_THINGS(FORIA)/
+
+# macOS
+.DS_Store
