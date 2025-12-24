@@ -13,7 +13,7 @@ SQLAlchemy==2.0.23
 # Web scraping
 beautifulsoup4==4.12.2
 requests==2.31.0
-lxml==4.9.3
+lxml==5.3.0
 
 # PDF generation
 weasyprint==60.1

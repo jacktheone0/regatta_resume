@@ -2,6 +2,7 @@ services:
   - type: web
     name: regattaresume
     env: python
+    runtime: python-3.11
     region: oregon
     plan: free
     buildCommand: "./build.sh"
@@ -15,8 +16,6 @@ services:
         fromDatabase:
           name: regattaresume-db
           property: connectionString
-      - key: PYTHON_VERSION
-        value: 3.11.0
       - key: ENABLE_REGISTRATION
         value: true
       - key: ENABLE_PDF_EXPORT
