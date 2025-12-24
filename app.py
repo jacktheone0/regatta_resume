@@ -16,6 +16,11 @@ app = Flask(__name__)
 env = os.environ.get('FLASK_ENV', 'development')
 app.config.from_object(config[env])
 
+# Log database configuration (without exposing credentials)
+db_uri = app.config.get('SQLALCHEMY_DATABASE_URI', 'Not set')
+db_type = 'PostgreSQL' if 'postgresql://' in db_uri else 'SQLite' if 'sqlite:///' in db_uri else 'Unknown'
+app.logger.info(f"Starting RegattaResume in {env} mode with {db_type} database")
+
 # Initialize extensions
 db.init_app(app)
 migrate = Migrate(app, db)
