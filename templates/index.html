@@ -1,0 +1,264 @@
+{% extends "base.html" %}
+
+{% block content %}
+<!-- Hero Section -->
+<div class="hero-section bg-primary text-white py-5">
+    <div class="container">
+        <div class="row align-items-center">
+            <div class="col-lg-8 mx-auto text-center">
+                <h1 class="display-4 fw-bold mb-3">Your Sailing Resume, Perfected</h1>
+                <p class="lead mb-4">
+                    Search thousands of regatta results. Build professional sailing resumes.
+                    Track performance trends.
+                </p>
+
+                <!-- Search Bar -->
+                <div class="search-container">
+                    <div class="input-group input-group-lg">
+                        <input
+                            type="text"
+                            id="sailorSearch"
+                            class="form-control"
+                            placeholder="Search for a sailor..."
+                            autocomplete="off"
+                        >
+                        <button class="btn btn-light" type="button" id="searchBtn">
+                            Search
+                        </button>
+                    </div>
+                    <div id="searchResults" class="search-results"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Stats Section -->
+<div class="container my-5">
+    <div class="row text-center">
+        <div class="col-md-4 mb-4">
+            <div class="stat-card">
+                <div class="stat-number">{{ total_sailors }}</div>
+                <div class="stat-label">Sailors Tracked</div>
+            </div>
+        </div>
+        <div class="col-md-4 mb-4">
+            <div class="stat-card">
+                <div class="stat-number">{{ total_regattas }}</div>
+                <div class="stat-label">Regattas Recorded</div>
+            </div>
+        </div>
+        <div class="col-md-4 mb-4">
+            <div class="stat-card">
+                <div class="stat-number">100%</div>
+                <div class="stat-label">Free Forever</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Features Section -->
+<div class="container my-5">
+    <h2 class="text-center mb-5">Built for Sailors & Coaches</h2>
+
+    <div class="row">
+        <div class="col-md-6 mb-4">
+            <div class="feature-card">
+                <h3>For Sailors</h3>
+                <ul class="feature-list">
+                    <li>View all your regatta results in one place</li>
+                    <li>Build professional sailing resumes</li>
+                    <li>Export as PDF or shareable link</li>
+                    <li>Customize what to include</li>
+                    <li>Track your progress over time</li>
+                </ul>
+                {% if not current_user.is_authenticated %}
+                    <a href="{{ url_for('register') }}" class="btn btn-primary">Get Started</a>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="col-md-6 mb-4">
+            <div class="feature-card">
+                <h3>For Coaches</h3>
+                <ul class="feature-list">
+                    <li>Search and evaluate sailors</li>
+                    <li>View performance trends</li>
+                    <li>Compare recent vs historical results</li>
+                    <li>Filter by fleet, date, and more</li>
+                    <li>Export analytics reports</li>
+                </ul>
+                {% if not current_user.is_authenticated %}
+                    <a href="{{ url_for('register') }}" class="btn btn-primary">Create Account</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Sailors -->
+{% if recent_sailors %}
+<div class="container my-5">
+    <h2 class="mb-4">Recently Updated Sailors</h2>
+    <div class="row">
+        {% for sailor in recent_sailors %}
+        <div class="col-md-4 mb-3">
+            <div class="card sailor-card">
+                <div class="card-body">
+                    <h5 class="card-title">{{ sailor.name }}</h5>
+                    {% if sailor.home_club %}
+                        <p class="text-muted mb-2">{{ sailor.home_club }}</p>
+                    {% endif %}
+                    <div class="sailor-stats-mini">
+                        <small>
+                            {{ sailor.total_regattas }} regattas
+                            {% if sailor.best_finish %}
+                                | Best: {{ sailor.best_finish }}
+                            {% endif %}
+                        </small>
+                    </div>
+                    <a href="{{ url_for('sailor_profile', sailor_id=sailor.id) }}" class="btn btn-sm btn-outline-primary mt-2">
+                        View Profile
+                    </a>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<style>
+.hero-section {
+    background: linear-gradient(135deg, #0066cc 0%, #004c99 100%);
+}
+
+.search-container {
+    max-width: 600px;
+    margin: 0 auto;
+    position: relative;
+}
+
+.search-results {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: white;
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    max-height: 400px;
+    overflow-y: auto;
+    z-index: 1000;
+    display: none;
+}
+
+.search-result-item {
+    padding: 1rem;
+    border-bottom: 1px solid #eee;
+    cursor: pointer;
+    color: #333;
+    text-decoration: none;
+    display: block;
+}
+
+.search-result-item:hover {
+    background: #f8f9fa;
+}
+
+.stat-card {
+    padding: 2rem;
+}
+
+.stat-number {
+    font-size: 3rem;
+    font-weight: bold;
+    color: #0066cc;
+}
+
+.stat-label {
+    font-size: 1.1rem;
+    color: #666;
+}
+
+.feature-card {
+    background: #f8f9fa;
+    padding: 2rem;
+    border-radius: 0.5rem;
+    height: 100%;
+}
+
+.feature-list {
+    list-style: none;
+    padding-left: 0;
+    margin-bottom: 1.5rem;
+}
+
+.feature-list li {
+    padding: 0.5rem 0;
+    padding-left: 1.5rem;
+    position: relative;
+}
+
+.feature-list li:before {
+    content: "✓";
+    position: absolute;
+    left: 0;
+    color: #0066cc;
+    font-weight: bold;
+}
+
+.sailor-card {
+    transition: transform 0.2s;
+}
+
+.sailor-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const searchInput = document.getElementById('sailorSearch');
+const searchResults = document.getElementById('searchResults');
+let searchTimeout;
+
+searchInput.addEventListener('input', function() {
+    clearTimeout(searchTimeout);
+    const query = this.value.trim();
+
+    if (query.length < 2) {
+        searchResults.style.display = 'none';
+        return;
+    }
+
+    searchTimeout = setTimeout(() => {
+        fetch(`/search?q=${encodeURIComponent(query)}`)
+            .then(res => res.json())
+            .then(sailors => {
+                if (sailors.length === 0) {
+                    searchResults.innerHTML = '<div class="search-result-item">No sailors found</div>';
+                } else {
+                    searchResults.innerHTML = sailors.map(sailor => `
+                        <a href="/sailor/${sailor.id}" class="search-result-item">
+                            <strong>${sailor.name}</strong>
+                            ${sailor.home_club ? `<br><small class="text-muted">${sailor.home_club}</small>` : ''}
+                            <br><small>${sailor.total_regattas} regattas${sailor.best_finish ? ` | Best: ${sailor.best_finish}` : ''}</small>
+                        </a>
+                    `).join('');
+                }
+                searchResults.style.display = 'block';
+            });
+    }, 300);
+});
+
+// Hide results when clicking outside
+document.addEventListener('click', function(e) {
+    if (!searchInput.contains(e.target) && !searchResults.contains(e.target)) {
+        searchResults.style.display = 'none';
+    }
+});
+</script>
+{% endblock %}

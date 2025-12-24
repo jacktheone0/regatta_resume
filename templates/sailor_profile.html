@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+
+{% block title %}{{ sailor.name }} - RegattaResume{% endblock %}
+
+{% block content %}
+<div class="container my-5">
+    <!-- Header -->
+    <div class="profile-header mb-4">
+        <div class="row align-items-center">
+            <div class="col-md-8">
+                <h1 class="mb-2">{{ sailor.name }}</h1>
+                {% if sailor.home_club %}
+                    <p class="text-muted lead mb-0">{{ sailor.home_club }}</p>
+                {% endif %}
+                {% if sailor.bio %}
+                    <p class="mt-3">{{ sailor.bio }}</p>
+                {% endif %}
+            </div>
+            <div class="col-md-4 text-md-end">
+                {% if is_owner %}
+                    <a href="{{ url_for('resume_builder', sailor_id=sailor.id) }}" class="btn btn-primary">
+                        Build Resume
+                    </a>
+                {% endif %}
+                <a href="{{ url_for('coach_view', sailor_id=sailor.id) }}" class="btn btn-outline-primary">
+                    Coach View
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stats Cards -->
+    <div class="row mb-4">
+        <div class="col-md-3 col-6 mb-3">
+            <div class="stat-box">
+                <div class="stat-value">{{ stats.total_regattas }}</div>
+                <div class="stat-label">Total Regattas</div>
+            </div>
+        </div>
+        <div class="col-md-3 col-6 mb-3">
+            <div class="stat-box highlight">
+                <div class="stat-value">{{ stats.best_finish or 'N/A' }}</div>
+                <div class="stat-label">Best Finish</div>
+            </div>
+        </div>
+        <div class="col-md-3 col-6 mb-3">
+            <div class="stat-box">
+                <div class="stat-value">{{ stats.average_placement or 'N/A' }}</div>
+                <div class="stat-label">Avg Placement</div>
+            </div>
+        </div>
+        <div class="col-md-3 col-6 mb-3">
+            <div class="stat-box">
+                <div class="stat-value">{{ stats.top_3_count }}</div>
+                <div class="stat-label">Podium Finishes</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Facts -->
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title mb-3">Quick Facts</h5>
+                    <div class="row">
+                        {% if stats.most_sailed_fleet %}
+                        <div class="col-md-3 mb-2">
+                            <strong>Primary Fleet:</strong> {{ stats.most_sailed_fleet }}
+                        </div>
+                        {% endif %}
+                        {% if stats.years_active %}
+                        <div class="col-md-3 mb-2">
+                            <strong>Years Active:</strong> {{ stats.years_active }}
+                        </div>
+                        {% endif %}
+                        <div class="col-md-3 mb-2">
+                            <strong>Top 10 Finishes:</strong> {{ stats.top_10_count }}
+                        </div>
+                        <div class="col-md-3 mb-2">
+                            <strong>Recent Activity:</strong> {{ stats.recent_regattas }} in last 6mo
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Results Table -->
+    <div class="card">
+        <div class="card-header bg-white">
+            <h5 class="mb-0">Regatta Results</h5>
+        </div>
+        <div class="card-body">
+            {% if results %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Regatta</th>
+                                <th>Location</th>
+                                <th>Placement</th>
+                                <th>Fleet</th>
+                                <th>Role</th>
+                                <th>Points</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for result, regatta in results %}
+                            <tr class="{% if result.placement <= 3 %}table-warning{% endif %}">
+                                <td>{{ regatta.start_date.strftime('%b %d, %Y') }}</td>
+                                <td>
+                                    <strong>{{ regatta.name }}</strong>
+                                    {% if result.division %}
+                                        <br><small class="text-muted">{{ result.division }}</small>
+                                    {% endif %}
+                                </td>
+                                <td>{{ regatta.location or 'N/A' }}</td>
+                                <td>
+                                    <span class="badge
+                                        {% if result.placement == 1 %}bg-warning text-dark
+                                        {% elif result.placement == 2 %}bg-secondary
+                                        {% elif result.placement == 3 %}bg-info
+                                        {% else %}bg-light text-dark
+                                        {% endif %}">
+                                        {{ result.placement }}
+                                    </span>
+                                </td>
+                                <td>{{ result.boat_type or regatta.fleet_type or 'N/A' }}</td>
+                                <td>
+                                    {% if result.role %}
+                                        {{ result.role.capitalize() }}
+                                    {% else %}
+                                        N/A
+                                    {% endif %}
+                                </td>
+                                <td>{{ result.points_scored or 'N/A' }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <p class="text-muted">No results found for this sailor.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<style>
+.profile-header {
+    padding-bottom: 1.5rem;
+    border-bottom: 2px solid #eee;
+}
+
+.stat-box {
+    background: #f8f9fa;
+    padding: 1.5rem;
+    border-radius: 0.5rem;
+    text-align: center;
+}
+
+.stat-box.highlight {
+    background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
+}
+
+.stat-value {
+    font-size: 2rem;
+    font-weight: bold;
+    color: #0066cc;
+}
+
+.stat-box.highlight .stat-value {
+    color: #000;
+}
+
+.stat-label {
+    color: #666;
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
+}
+
+.table-warning {
+    background-color: rgba(255, 215, 0, 0.1) !important;
+}
+</style>
+{% endblock %}

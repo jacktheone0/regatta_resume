@@ -1,2 +1,0 @@
-Sailors being checked:
-name_not_found_in_rows

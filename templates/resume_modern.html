@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}{{ sailor.name }} - Sailing Resume{% endblock %}
+
+{% block content %}
+<div class="resume-modern">
+    <div class="container my-5">
+        <!-- Header -->
+        <div class="resume-header text-center mb-5">
+            <h1 class="display-4 mb-2">{{ sailor.name }}</h1>
+            {% if sailor.home_club %}
+                <p class="lead text-muted">{{ sailor.home_club }}</p>
+            {% endif %}
+            <div class="resume-badge">{{ resume_link.title }}</div>
+        </div>
+
+        <!-- Bio -->
+        {% if resume_link.custom_bio or sailor.bio %}
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">About</h5>
+                <p class="mb-0">{{ resume_link.custom_bio or sailor.bio }}</p>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Results -->
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">Regatta Results</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="timeline">
+                    {% for result, regatta in results %}
+                    <div class="timeline-item">
+                        <div class="timeline-marker {% if result.placement <= 3 %}podium{% endif %}">
+                            {{ result.placement }}
+                        </div>
+                        <div class="timeline-content">
+                            <div class="timeline-header">
+                                <strong>{{ regatta.name }}</strong>
+                                <span class="text-muted">{{ regatta.start_date.strftime('%B %Y') }}</span>
+                            </div>
+                            <div class="timeline-details">
+                                {% if regatta.location %}<span>{{ regatta.location }}</span>{% endif %}
+                                {% if result.boat_type %}<span>{{ result.boat_type }}</span>{% endif %}
+                                {% if result.role %}<span>{{ result.role.capitalize() }}</span>{% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="text-center mt-5 text-muted">
+            <small>Created with RegattaResume</small>
+        </div>
+    </div>
+</div>
+
+<style>
+.resume-modern {
+    background: #f8f9fa;
+    min-height: 100vh;
+    padding: 2rem 0;
+}
+
+.resume-header {
+    background: white;
+    padding: 3rem;
+    border-radius: 0.5rem;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+.resume-badge {
+    display: inline-block;
+    background: #0066cc;
+    color: white;
+    padding: 0.5rem 1.5rem;
+    border-radius: 2rem;
+    margin-top: 1rem;
+}
+
+.timeline {
+    padding: 2rem;
+}
+
+.timeline-item {
+    display: flex;
+    padding: 1.5rem 0;
+    border-bottom: 1px solid #eee;
+}
+
+.timeline-item:last-child {
+    border-bottom: none;
+}
+
+.timeline-marker {
+    min-width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: #f0f0f0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 1.2rem;
+    margin-right: 1.5rem;
+}
+
+.timeline-marker.podium {
+    background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
+    color: #000;
+}
+
+.timeline-content {
+    flex: 1;
+}
+
+.timeline-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+}
+
+.timeline-details span {
+    display: inline-block;
+    margin-right: 1rem;
+    color: #666;
+    font-size: 0.9rem;
+}
+
+@media print {
+    .navbar, footer, .btn { display: none; }
+    .resume-modern { background: white; }
+}
+</style>
+{% endblock %}

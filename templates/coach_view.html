@@ -1,0 +1,272 @@
+{% extends "base.html" %}
+
+{% block title %}Coach Analytics - {{ sailor.name }}{% endblock %}
+
+{% block content %}
+<div class="container my-5">
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h1>{{ sailor.name }}</h1>
+            <p class="text-muted lead">Performance Analytics</p>
+        </div>
+        <a href="{{ url_for('sailor_profile', sailor_id=sailor.id) }}" class="btn btn-outline-secondary">
+            View Full Profile
+        </a>
+    </div>
+
+    <!-- Time Range Selector -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <form method="GET" class="row align-items-center">
+                <div class="col-auto">
+                    <label class="col-form-label">Analyze performance:</label>
+                </div>
+                <div class="col-auto">
+                    <select name="months" class="form-select" onchange="this.form.submit()">
+                        <option value="3" {% if months_back == 3 %}selected{% endif %}>Last 3 months</option>
+                        <option value="6" {% if months_back == 6 %}selected{% endif %}>Last 6 months</option>
+                        <option value="12" {% if months_back == 12 %}selected{% endif %}>Last year</option>
+                        <option value="24" {% if months_back == 24 %}selected{% endif %}>Last 2 years</option>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <span class="text-muted">vs. historical performance</span>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Performance Comparison Cards -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="stat-card">
+                <div class="stat-label">Recent Avg</div>
+                <div class="stat-value {% if trends.improvement and trends.improvement > 0 %}text-success{% elif trends.improvement and trends.improvement < 0 %}text-danger{% endif %}">
+                    {{ trends.recent_avg or 'N/A' }}
+                </div>
+                <small class="text-muted">Last {{ months_back }} months</small>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="stat-card">
+                <div class="stat-label">Historical Avg</div>
+                <div class="stat-value">{{ trends.historical_avg or 'N/A' }}</div>
+                <small class="text-muted">Before recent period</small>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="stat-card {% if trends.improvement and trends.improvement > 0 %}highlight-green{% elif trends.improvement and trends.improvement < 0 %}highlight-red{% endif %}">
+                <div class="stat-label">Improvement</div>
+                <div class="stat-value">
+                    {% if trends.improvement %}
+                        {{ '%+.1f'|format(trends.improvement) }}
+                        {% if trends.improvement > 0 %}↑{% else %}↓{% endif %}
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </div>
+                <small class="text-muted">Lower is better</small>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="stat-card">
+                <div class="stat-label">Consistency</div>
+                <div class="stat-value">{{ trends.consistency or 'N/A' }}</div>
+                <small class="text-muted">Std deviation</small>
+            </div>
+        </div>
+    </div>
+
+    <!-- Performance Chart -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">Performance Trend</h5>
+        </div>
+        <div class="card-body">
+            <canvas id="performanceChart" height="80"></canvas>
+        </div>
+    </div>
+
+    <!-- Fleet Breakdown -->
+    {% if fleet_stats %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">Fleet Performance</h5>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Fleet</th>
+                            <th>Races</th>
+                            <th>Avg Placement</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for fleet in fleet_stats %}
+                        <tr>
+                            <td><strong>{{ fleet.boat_type }}</strong></td>
+                            <td>{{ fleet.count }}</td>
+                            <td>{{ '%.1f'|format(fleet.avg_placement) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Recent vs Historical Results -->
+    <div class="row">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0">Recent Results ({{ months_back }}mo)</h5>
+                </div>
+                <div class="card-body" style="max-height: 500px; overflow-y: auto;">
+                    {% if recent_results %}
+                        <table class="table table-sm">
+                            <tbody>
+                                {% for result, regatta in recent_results %}
+                                <tr>
+                                    <td>
+                                        <span class="badge bg-primary">#{{ result.placement }}</span>
+                                    </td>
+                                    <td>
+                                        <strong>{{ regatta.name }}</strong><br>
+                                        <small class="text-muted">{{ regatta.start_date.strftime('%b %d, %Y') }}</small>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    {% else %}
+                        <p class="text-muted">No recent results in this period.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header bg-secondary text-white">
+                    <h5 class="mb-0">Historical Results</h5>
+                </div>
+                <div class="card-body" style="max-height: 500px; overflow-y: auto;">
+                    {% if historical_results %}
+                        <table class="table table-sm">
+                            <tbody>
+                                {% for result, regatta in historical_results[:20] %}
+                                <tr>
+                                    <td>
+                                        <span class="badge bg-primary">#{{ result.placement }}</span>
+                                    </td>
+                                    <td>
+                                        <strong>{{ regatta.name }}</strong><br>
+                                        <small class="text-muted">{{ regatta.start_date.strftime('%b %d, %Y') }}</small>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    {% else %}
+                        <p class="text-muted">No historical results.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.stat-card {
+    background: #f8f9fa;
+    padding: 1.5rem;
+    border-radius: 0.5rem;
+    text-align: center;
+    margin-bottom: 1rem;
+}
+
+.stat-card.highlight-green {
+    background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+}
+
+.stat-card.highlight-red {
+    background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%);
+}
+
+.stat-label {
+    font-size: 0.9rem;
+    color: #666;
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+    font-weight: 600;
+}
+
+.stat-value {
+    font-size: 2.5rem;
+    font-weight: bold;
+    color: #0066cc;
+}
+</style>
+
+<script>
+const chartData = {{ trends.chart_data | tojson }};
+
+// Create performance trend chart
+const ctx = document.getElementById('performanceChart').getContext('2d');
+new Chart(ctx, {
+    type: 'line',
+    data: {
+        labels: chartData.map(d => d.date),
+        datasets: [{
+            label: 'Placement',
+            data: chartData.map(d => d.placement),
+            borderColor: '#0066cc',
+            backgroundColor: 'rgba(0, 102, 204, 0.1)',
+            tension: 0.3,
+            fill: true
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        scales: {
+            y: {
+                reverse: true,  // Lower placements at top
+                beginAtZero: false,
+                title: {
+                    display: true,
+                    text: 'Placement (lower is better)'
+                }
+            },
+            x: {
+                title: {
+                    display: true,
+                    text: 'Date'
+                }
+            }
+        },
+        plugins: {
+            tooltip: {
+                callbacks: {
+                    title: function(context) {
+                        const index = context[0].dataIndex;
+                        return chartData[index].regatta;
+                    },
+                    label: function(context) {
+                        return 'Placement: #' + context.parsed.y;
+                    }
+                }
+            },
+            legend: {
+                display: false
+            }
+        }
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,33 @@
+# Flask and web framework
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
+Flask-Login==0.6.3
+Flask-WTF==1.2.1
+WTForms==3.1.1
+Flask-Migrate==4.0.5
+
+# Database
+psycopg2-binary==2.9.9
+SQLAlchemy==2.0.23
+
+# Web scraping
+beautifulsoup4==4.12.2
+requests==2.31.0
+lxml==4.9.3
+
+# PDF generation
+weasyprint==60.1
+
+# Task scheduling
+APScheduler==3.10.4
+
+# Authentication & Security
+Werkzeug==3.0.1
+email-validator==2.1.0
+
+# Utilities
+python-dotenv==1.0.0
+gunicorn==21.2.0
+
+# Date handling
+python-dateutil==2.8.2

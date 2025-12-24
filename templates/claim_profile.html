@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block title %}Claim Your Profile - RegattaResume{% endblock %}
+
+{% block content %}
+<div class="container my-5">
+    <h1 class="mb-4">Claim Your Sailor Profile</h1>
+
+    <div class="alert alert-info">
+        <strong>Find your profile below and claim it to:</strong>
+        <ul class="mb-0 mt-2">
+            <li>Build custom sailing resumes</li>
+            <li>Create shareable profile links</li>
+            <li>Control what results to showcase</li>
+            <li>Add a bio and customize your profile</li>
+        </ul>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h5 class="mb-0">Search for Your Profile</h5>
+        </div>
+        <div class="card-body">
+            <input
+                type="text"
+                id="profileSearch"
+                class="form-control mb-4"
+                placeholder="Type your name..."
+            >
+
+            <div id="sailorsList">
+                {% if sailors %}
+                    {% for sailor in sailors %}
+                    <div class="sailor-claim-item" data-name="{{ sailor.name.lower() }}">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h6 class="mb-1">{{ sailor.name }}</h6>
+                                {% if sailor.home_club %}
+                                    <small class="text-muted">{{ sailor.home_club }}</small>
+                                {% endif %}
+                                <br>
+                                <small class="text-muted">
+                                    {{ sailor.total_regattas }} regattas
+                                    {% if sailor.best_finish %}| Best: {{ sailor.best_finish }}{% endif %}
+                                </small>
+                            </div>
+                            <div>
+                                <form method="POST" class="d-inline">
+                                    {{ form.hidden_tag() }}
+                                    <input type="hidden" name="sailor_id" value="{{ sailor.id }}">
+                                    <button type="submit" class="btn btn-primary">
+                                        Claim This Profile
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <p class="text-muted">No unclaimed profiles available at this time.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-4">
+        <p class="text-muted">
+            <strong>Don't see your profile?</strong> Your results may not have been scraped yet.
+            The scraper runs every Sunday at 11:59 PM. Check back soon!
+        </p>
+    </div>
+</div>
+
+<style>
+.sailor-claim-item {
+    padding: 1rem;
+    border-bottom: 1px solid #eee;
+}
+
+.sailor-claim-item:last-child {
+    border-bottom: none;
+}
+
+.sailor-claim-item:hover {
+    background: #f8f9fa;
+}
+</style>
+
+<script>
+const searchInput = document.getElementById('profileSearch');
+const items = document.querySelectorAll('.sailor-claim-item');
+
+searchInput.addEventListener('input', function() {
+    const query = this.value.toLowerCase();
+
+    items.forEach(item => {
+        const name = item.dataset.name;
+        if (name.includes(query)) {
+            item.style.display = 'block';
+        } else {
+            item.style.display = 'none';
+        }
+    });
+});
+</script>
+{% endblock %}
