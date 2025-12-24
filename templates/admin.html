@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Dashboard - RegattaResume{% endblock %}
+
+{% block content %}
+<div class="container my-5">
+    <h1 class="mb-4">Admin Dashboard</h1>
+
+    <!-- Scraper Section -->
+    <div class="row mb-4">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0">Scraper Control</h5>
+                </div>
+                <div class="card-body">
+                    <p>Manually trigger the scraper to fetch regatta data from TheClubSpot.com</p>
+
+                    <div class="alert alert-info">
+                        <strong>Note:</strong> The scraper runs automatically every Sunday at 11:59 PM UTC.
+                        Use this button to run it manually if needed.
+                    </div>
+
+                    <button id="runScraperBtn" class="btn btn-success btn-lg">
+                        <i class="bi bi-play-circle"></i> Run Scraper Now
+                    </button>
+
+                    <div id="scraperStatus" class="mt-3" style="display: none;">
+                        <div class="alert" id="statusMessage"></div>
+                    </div>
+
+                    <div id="scraperLogs" class="mt-3" style="display: none;">
+                        <h6>Recent Scraper Runs:</h6>
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Started</th>
+                                        <th>Status</th>
+                                        <th>Regattas</th>
+                                        <th>Sailors</th>
+                                        <th>Results</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="logTableBody">
+                                    <!-- Will be populated by JavaScript -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Database Stats</h5>
+                </div>
+                <div class="card-body">
+                    <div class="stat-item mb-3">
+                        <div class="stat-label">Total Sailors</div>
+                        <div class="stat-value">{{ stats.total_sailors }}</div>
+                    </div>
+                    <div class="stat-item mb-3">
+                        <div class="stat-label">Total Regattas</div>
+                        <div class="stat-value">{{ stats.total_regattas }}</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Total Results</div>
+                        <div class="stat-value">{{ stats.total_results }}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="card">
+        <div class="card-header">
+            <h5 class="mb-0">Quick Actions</h5>
+        </div>
+        <div class="card-body">
+            <a href="{{ url_for('index') }}" class="btn btn-outline-primary me-2">View Site</a>
+            <a href="/api/sailors" class="btn btn-outline-secondary me-2" target="_blank">API Docs</a>
+        </div>
+    </div>
+</div>
+
+<style>
+.stat-item {
+    text-align: center;
+    padding: 1rem;
+    background: #f8f9fa;
+    border-radius: 0.5rem;
+}
+
+.stat-label {
+    font-size: 0.9rem;
+    color: #666;
+    margin-bottom: 0.5rem;
+}
+
+.stat-value {
+    font-size: 2rem;
+    font-weight: bold;
+    color: #0066cc;
+}
+</style>
+
+<script>
+document.getElementById('runScraperBtn').addEventListener('click', async function() {
+    const btn = this;
+    const statusDiv = document.getElementById('scraperStatus');
+    const statusMsg = document.getElementById('statusMessage');
+
+    // Disable button
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting...';
+
+    try {
+        const response = await fetch('/api/scraper/run', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            statusMsg.className = 'alert alert-success';
+            statusMsg.textContent = '✓ ' + data.message + ' - Check back in a few minutes to see results.';
+        } else {
+            statusMsg.className = 'alert alert-danger';
+            statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
+        }
+
+        statusDiv.style.display = 'block';
+
+        // Re-enable button after 10 seconds
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-circle"></i> Run Scraper Now';
+        }, 10000);
+
+    } catch (error) {
+        statusMsg.className = 'alert alert-danger';
+        statusMsg.textContent = '✗ Error: ' + error.message;
+        statusDiv.style.display = 'block';
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-circle"></i> Run Scraper Now';
+    }
+});
+
+// Auto-refresh stats every 30 seconds
+setInterval(() => {
+    location.reload();
+}, 30000);
+</script>
+{% endblock %}

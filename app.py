@@ -234,6 +234,20 @@ def shared_resume(token):
                          results=results)
 
 
+@app.route('/admin')
+@login_required
+def admin_dashboard():
+    """Admin dashboard with scraper controls"""
+    # Calculate database stats
+    stats = {
+        'total_sailors': Sailor.query.count(),
+        'total_regattas': Regatta.query.count(),
+        'total_results': Result.query.count()
+    }
+
+    return render_template('admin.html', stats=stats)
+
+
 # ============================================================================
 # API ENDPOINTS
 # ============================================================================
@@ -333,9 +347,14 @@ def api_run_scraper():
     #     return jsonify({'error': 'Admin only'}), 403
 
     try:
-        # Run scraper in background
+        # Run scraper in background with app context
         from threading import Thread
-        thread = Thread(target=lambda: run_scraper())
+
+        def run_with_context():
+            with app.app_context():
+                run_scraper()
+
+        thread = Thread(target=run_with_context)
         thread.start()
 
         return jsonify({
