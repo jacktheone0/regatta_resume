@@ -8,6 +8,10 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 echo "Running database migrations..."
-flask db upgrade || echo "No migrations to run"
+export FLASK_APP=app.py
+export FLASK_ENV=production
+
+# Run migrations
+flask db upgrade
 
 echo "Build complete!"
