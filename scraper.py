@@ -248,8 +248,8 @@ class ClubspotScraper:
 
     def _scrape_results_with_selenium(self, results_url, regatta_id, timeout=12):
         """
-        Scrape results page using Selenium to handle JavaScript rendering
-        Based on user's proven scraping logic
+        Scrape results page using Selenium with header-based column mapping
+        Maps columns by name (SAILORS, NET, etc.) instead of assuming positions
 
         Args:
             results_url: URL of the results page
@@ -257,7 +257,7 @@ class ClubspotScraper:
             timeout: Seconds to wait for page to load
 
         Returns:
-            List of result dicts with sailor names and placements
+            List of result dicts with sailor names, placements, and points
         """
         driver = None
         results = []
@@ -266,12 +266,10 @@ class ClubspotScraper:
             driver = make_driver()
             driver.get(results_url)
 
-            # Wait for any table rows to appear
+            # Wait for table to load
             def any_rows_present(d):
-                # Classic table rows with TDs
                 if d.find_elements(By.CSS_SELECTOR, "table tbody tr td"):
                     return True
-                # Virtualized/data-grid rows
                 if d.find_elements(By.CSS_SELECTOR, "[role='row'] [role='gridcell'], .ag-row .ag-cell"):
                     return True
                 return False
@@ -282,57 +280,35 @@ class ClubspotScraper:
                 logger.warning(f"Timeout waiting for results table at {results_url}")
                 return []
 
-            # JavaScript to extract all data rows (excluding headers)
-            HARVEST_JS = r"""
-const out = new Set();
-
-// 1) Classic tables: only rows in <tbody> that have at least one <td>
-document.querySelectorAll("table").forEach(tbl => {
-    tbl.querySelectorAll("tbody tr").forEach(tr => {
-        const tds = Array.from(tr.querySelectorAll("td"));
-        if (tds.length === 0) return;
-        const parts = tds.map(td => (td.innerText || td.textContent || "").trim()).filter(Boolean);
-        const line = parts.join(" | ").trim();
-        if (line) out.add(line);
-    });
-});
-
-// 2) WAI-ARIA grids
-document.querySelectorAll("[role='row']").forEach(row => {
-    const cells = Array.from(row.querySelectorAll("[role='gridcell'], [role='cell']"));
-    if (cells.length === 0) return;
-    const parts = cells.map(c => (c.innerText || c.textContent || "").trim()).filter(Boolean);
-    const line = parts.join(" | ").trim();
-    if (line) out.add(line);
-});
-
-// 3) AG Grid
-document.querySelectorAll(".ag-row").forEach(row => {
-    const cells = Array.from(row.querySelectorAll(".ag-cell"));
-    if (cells.length === 0) return;
-    const parts = cells.map(c => (c.innerText || c.textContent || "").trim()).filter(Boolean);
-    const line = parts.join(" | ").trim();
-    if (line) out.add(line);
-});
-
-return Array.from(out);
-"""
-
             # Scroll to load lazy content
             for _ in range(8):
                 driver.execute_script("window.scrollBy(0, Math.max(600, window.innerHeight));")
                 time.sleep(0.2)
 
-            # Extract all row data
-            rows_text = driver.execute_script(HARVEST_JS) or []
+            # Use the inspect table structure logic to get headers and rows
+            table_structure = driver.execute_script(self._get_table_extraction_js())
 
-            # Parse each row to extract sailor name and placement
-            for row_text in rows_text:
-                result_data = self._parse_result_row(row_text)
+            if not table_structure or not table_structure.get('rows'):
+                logger.warning(f"No table data found at {results_url}")
+                return []
+
+            headers = table_structure.get('headers', [])
+            rows = table_structure.get('rows', [])
+
+            logger.info(f"Found {len(rows)} rows with {len(headers)} columns")
+            logger.info(f"Headers: {headers}")
+
+            # Map column indices by header name (case-insensitive)
+            col_map = self._map_column_indices(headers)
+            logger.info(f"Column mapping: {col_map}")
+
+            # Parse each row using header-based mapping
+            for row_idx, row_data in enumerate(rows, 1):
+                result_data = self._parse_row_with_headers(row_data, row_idx, col_map)
                 if result_data:
                     results.append(result_data)
 
-            logger.info(f"Extracted {len(results)} results from {results_url}")
+            logger.info(f"Extracted {len(results)} valid results from {results_url}")
             return results
 
         except Exception as e:
@@ -342,60 +318,135 @@ return Array.from(out);
             if driver:
                 driver.quit()
 
-    def _parse_result_row(self, row_text):
+    def _get_table_extraction_js(self):
+        """JavaScript to extract table headers and rows"""
+        return r"""
+const result = {
+    headers: [],
+    rows: [],
+    tableType: 'unknown'
+};
+
+// Try to find classic HTML table first
+const classicTable = document.querySelector('table');
+if (classicTable) {
+    result.tableType = 'classic-html-table';
+
+    // Get headers from thead or first row
+    const headerRow = classicTable.querySelector('thead tr') || classicTable.querySelector('tr');
+    if (headerRow) {
+        const headers = Array.from(headerRow.querySelectorAll('th, td'));
+        result.headers = headers.map(h => (h.innerText || h.textContent || "").trim()).filter(Boolean);
+    }
+
+    // Get data rows from tbody
+    const dataRows = classicTable.querySelectorAll('tbody tr');
+    dataRows.forEach((tr) => {
+        const cells = Array.from(tr.querySelectorAll('td'));
+        const rowData = cells.map(td => (td.innerText || td.textContent || "").trim());
+        if (rowData.some(c => c)) result.rows.push(rowData);
+    });
+}
+
+// Try AG Grid if no classic table found
+if (result.rows.length === 0) {
+    const agHeader = document.querySelector('.ag-header-row');
+    const agRows = document.querySelectorAll('.ag-row');
+
+    if (agHeader && agRows.length > 0) {
+        result.tableType = 'ag-grid';
+        const headerCells = agHeader.querySelectorAll('.ag-header-cell');
+        result.headers = Array.from(headerCells).map(h => (h.innerText || h.textContent || "").trim()).filter(Boolean);
+
+        agRows.forEach((row) => {
+            const cells = Array.from(row.querySelectorAll('.ag-cell'));
+            const rowData = cells.map(c => (c.innerText || c.textContent || "").trim());
+            if (rowData.some(c => c)) result.rows.push(rowData);
+        });
+    }
+}
+
+return result;
+"""
+
+    def _map_column_indices(self, headers):
         """
-        Parse a single row of results text to extract sailor data
-
-        Args:
-            row_text: Pipe-separated row text (e.g., "1 | 12345 | John Doe | 15.0")
-
-        Returns:
-            Dict with sailor_name, placement, and optionally points_scored
+        Map column indices by header name
+        Returns dict with column indices for: sailors, net, total, sail_number
         """
-        try:
-            # Split by pipe separator
-            parts = [p.strip() for p in row_text.split('|')]
+        col_map = {}
+        headers_lower = [h.lower() for h in headers]
 
-            if len(parts) < 2:
-                return None
+        # Find SAILORS column
+        for idx, h in enumerate(headers_lower):
+            if 'sailor' in h or 'name' in h or 'skipper' in h or 'helm' in h:
+                col_map['sailors'] = idx
+                break
 
-            # First column is usually placement
-            placement_text = parts[0]
-            placement = self._extract_placement(placement_text)
+        # Find NET points column (preferred over TOTAL)
+        for idx, h in enumerate(headers_lower):
+            if h == 'net' or h == 'net points':
+                col_map['points'] = idx
+                break
 
-            if not placement:
-                return None
-
-            # Find sailor name (usually 2nd or 3rd column, not a number)
-            sailor_name = None
-            for part in parts[1:5]:  # Check next few columns
-                if part and len(part) > 2 and not part.replace('.', '').isdigit():
-                    # Split on newlines if multiple names
-                    names = part.split('\n')
-                    sailor_name = names[0].strip()
+        # Fallback to TOTAL if NET not found
+        if 'points' not in col_map:
+            for idx, h in enumerate(headers_lower):
+                if 'total' in h and 'point' in h:
+                    col_map['points'] = idx
                     break
 
-            if not sailor_name:
+        # Find SAIL NUMBER column (optional, for reference)
+        for idx, h in enumerate(headers_lower):
+            if 'sail' in h and ('number' in h or 'no' in h or '#' in h):
+                col_map['sail_number'] = idx
+                break
+
+        return col_map
+
+    def _parse_row_with_headers(self, row_data, row_index, col_map):
+        """
+        Parse a single row using column header mapping
+        row_index is the placement (1st, 2nd, 3rd, etc.)
+        """
+        try:
+            # Get sailor names from SAILORS column
+            sailor_name = None
+            if 'sailors' in col_map:
+                sailor_col = row_data[col_map['sailors']]
+                # Split by newline if multiple names (skipper/crew)
+                names = [n.strip() for n in sailor_col.split('\n') if n.strip()]
+                if names:
+                    sailor_name = names[0]  # Take first name (skipper)
+
+            if not sailor_name or len(sailor_name) < 2:
+                return None
+
+            # Validate it's not a number (sail number leaked into name)
+            if sailor_name.replace(' ', '').replace('-', '').isdigit():
                 return None
 
             result_data = {
-                'placement': placement,
+                'placement': row_index,  # Row index IS the placement
                 'sailor_name': sailor_name
             }
 
-            # Try to extract points (usually last column)
-            for part in reversed(parts[-3:]):
+            # Get points from NET or TOTAL column
+            if 'points' in col_map:
+                points_text = row_data[col_map['points']]
                 try:
-                    points = float(part)
-                    result_data['points_scored'] = points
-                    break
+                    points = float(points_text)
+                    # Validate reasonable points range (1-1000)
+                    if 1 <= points <= 1000:
+                        result_data['points_scored'] = points
                 except ValueError:
-                    continue
+                    pass
 
+            logger.debug(f"Parsed row {row_index}: {sailor_name} = {result_data.get('points_scored', 'N/A')} pts")
             return result_data
 
         except Exception as e:
-            logger.debug(f"Error parsing result row: {e}")
+            logger.debug(f"Error parsing row {row_index}: {e}")
             return None
 
     def _parse_api_regatta_data(self, api_data, regatta_id, url):
