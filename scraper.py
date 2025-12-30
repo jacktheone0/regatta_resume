@@ -1,10 +1,10 @@
 """
 Web scraper for theclubspot.com regatta results
-UPDATED: Now scrapes real data from theclubspot.com
+Uses Parse API to fetch all regatta IDs, then scrapes each regatta's results
 """
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timezone
 from models import db, Sailor, Regatta, Result, ScraperLog
 import logging
 import re
@@ -27,23 +27,81 @@ class ClubspotScraper:
             'sailors_added': 0,
             'results_added': 0
         }
-        # Known regatta IDs from 2024 (starter list - will expand)
-        self.regatta_ids = [
-            'r7bw6wf1a8',  # 2024 C420 US NATIONAL CHAMPIONSHIP
-            'QyzP8g1eKs',  # 2024 ILCA North American Championship
-            'YzyHD2J2y0',  # 2024 US Olympic Team Trials
-            'QpjAg9jjdC',  # 2024 J/24 National Championship
-            '60QaLUbh0H',  # 2024 U.S. Youth Championship
-            'IMIGSj06De',  # 2024 J/24 World Championship
-            'pEFUbQJiBg',  # 2024 ILCA USA Masters Regatta
-        ]
 
-    def scrape_all_regattas(self, limit=None):
+        # Parse API configuration for fetching regatta IDs
+        self.parse_headers = {
+            'Content-Type': 'text/plain',
+            'Origin': 'https://theclubspot.com',
+            'Referer': 'https://theclubspot.com/events',
+            'User-Agent': 'Mozilla/5.0',
+        }
+        self.parse_api_url = 'https://theclubspot.com/parse/classes/regattas'
+
+    def fetch_all_regatta_ids(self, limit=None, start_year=None):
+        """
+        Fetch all regatta IDs from the Parse API
+
+        Args:
+            limit: Maximum number of regatta IDs to fetch (default: all)
+            start_year: Only fetch regattas from this year onwards (e.g., 2024)
+
+        Returns:
+            List of dicts with regatta metadata: objectId, name, startDate, clubObject
+        """
+        logger.info("Fetching regatta IDs from Parse API...")
+
+        # Build the where clause with date filter if provided
+        where_clause = {
+            'archived': {'$ne': True},
+            'public': True,
+            'clubObject': {'$nin': ['HCyTbbCF4n', 'XVgOrNASDY', 'ecNpKgrusD', 'GTKaJKeque', 'TTBnsppUug', 'pnBFlwJ2Mf']},
+        }
+
+        # Add year filter if provided
+        if start_year:
+            start_date = f"{start_year}-01-01T00:00:00.000Z"
+            where_clause['startDate'] = {'$gte': {'__type': 'Date', 'iso': start_date}}
+
+        data = {
+            'where': where_clause,
+            'include': 'clubObject',
+            'keys': 'objectId,name,startDate,endDate,clubObject.id,clubObject.name',
+            'count': 1,
+            'limit': limit or 15000,  # Fetch up to 15k regattas
+            'order': '-startDate',
+            '_method': 'GET',
+            '_ApplicationId': 'myclubspot2017',
+            '_ClientVersion': 'js4.3.1-forked-1.0',
+            '_InstallationId': 'ce500aaa-c2a0-4d06-a9e3-1a558a606542',
+        }
+
+        try:
+            response = requests.post(
+                self.parse_api_url,
+                headers=self.parse_headers,
+                json=data,
+                timeout=60
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+            total_count = payload.get('count', 0)
+            results = payload.get('results', [])
+
+            logger.info(f"Parse API returned {len(results)} regattas (total available: {total_count})")
+            return results
+
+        except Exception as e:
+            logger.error(f"Failed to fetch regatta IDs from Parse API: {e}")
+            return []
+
+    def scrape_all_regattas(self, limit=None, start_year=2024):
         """
         Main entry point: scrape all available regattas
 
         Args:
             limit: Maximum number of regattas to scrape
+            start_year: Only scrape regattas from this year onwards (default: 2024)
         """
         log = ScraperLog(status='running')
         db.session.add(log)
@@ -52,15 +110,24 @@ class ClubspotScraper:
         try:
             logger.info("Starting scraper...")
 
-            # Use known regatta IDs for now
-            regatta_ids = self.regatta_ids[:limit] if limit else self.regatta_ids
+            # Fetch regatta IDs from Parse API
+            regattas_data = self.fetch_all_regatta_ids(limit=limit, start_year=start_year)
 
-            logger.info(f"Found {len(regatta_ids)} regattas to scrape")
+            if not regattas_data:
+                logger.warning("No regattas found to scrape!")
+                log.status = 'completed'
+                log.completed_at = datetime.utcnow()
+                db.session.commit()
+                return self.stats
 
-            for idx, regatta_id in enumerate(regatta_ids, 1):
-                logger.info(f"[{idx}/{len(regatta_ids)}] Scraping regatta: {regatta_id}")
+            logger.info(f"Found {len(regattas_data)} regattas to scrape")
+
+            for idx, regatta_data in enumerate(regattas_data, 1):
+                regatta_id = regatta_data.get('objectId')
+                regatta_name = regatta_data.get('name', 'Unknown')
+                logger.info(f"[{idx}/{len(regattas_data)}] Scraping: {regatta_name} ({regatta_id})")
                 try:
-                    self._scrape_regatta(regatta_id)
+                    self._scrape_regatta(regatta_id, regatta_data)
                     self.stats['regattas_scraped'] += 1
                     time.sleep(2)  # Be polite, don't hammer the server
                 except Exception as e:
@@ -85,27 +152,30 @@ class ClubspotScraper:
             logger.error(f"Scraper failed: {e}")
             raise
 
-    def _scrape_regatta(self, regatta_id):
+    def _scrape_regatta(self, regatta_id, api_data=None):
         """
         Scrape a single regatta by ID
 
         Args:
             regatta_id: The clubspot regatta ID
+            api_data: Optional dict with regatta metadata from Parse API
         """
         url = f"https://theclubspot.com/regatta/{regatta_id}"
 
         try:
-            # Fetch the regatta page
-            response = self.session.get(url, timeout=30)
-            if response.status_code != 200:
-                logger.warning(f"Failed to fetch {url}: {response.status_code}")
-                return
+            # Create or update regatta record using API data if available
+            if api_data:
+                regatta_metadata = self._parse_api_regatta_data(api_data, regatta_id, url)
+            else:
+                # Fallback: scrape the regatta page for metadata
+                response = self.session.get(url, timeout=30)
+                if response.status_code != 200:
+                    logger.warning(f"Failed to fetch {url}: {response.status_code}")
+                    return
+                soup = BeautifulSoup(response.content, 'lxml')
+                regatta_metadata = self._extract_regatta_metadata(soup, regatta_id, url)
 
-            soup = BeautifulSoup(response.content, 'lxml')
-
-            # Extract regatta metadata
-            regatta_data = self._extract_regatta_metadata(soup, regatta_id, url)
-            regatta = self._get_or_create_regatta(regatta_data)
+            regatta = self._get_or_create_regatta(regatta_metadata)
 
             # Now fetch the results page
             results_url = f"{url}/results"
@@ -122,6 +192,55 @@ class ClubspotScraper:
         except Exception as e:
             logger.error(f"Error in _scrape_regatta for {regatta_id}: {e}")
             raise
+
+    def _parse_api_regatta_data(self, api_data, regatta_id, url):
+        """
+        Parse regatta metadata from Parse API response
+
+        Args:
+            api_data: Dict from Parse API with regatta data
+            regatta_id: The regatta objectId
+            url: The regatta URL
+
+        Returns:
+            Dict with regatta metadata for database
+        """
+        data = {
+            'source_url': url,
+            'external_id': regatta_id,
+            'name': api_data.get('name', f'Regatta {regatta_id}')
+        }
+
+        # Parse start date
+        start_date_obj = api_data.get('startDate', {})
+        if isinstance(start_date_obj, dict) and 'iso' in start_date_obj:
+            try:
+                data['start_date'] = datetime.fromisoformat(
+                    start_date_obj['iso'].replace('Z', '+00:00')
+                ).date()
+            except Exception:
+                data['start_date'] = datetime.utcnow().date()
+        else:
+            data['start_date'] = datetime.utcnow().date()
+
+        # Parse end date
+        end_date_obj = api_data.get('endDate', {})
+        if isinstance(end_date_obj, dict) and 'iso' in end_date_obj:
+            try:
+                data['end_date'] = datetime.fromisoformat(
+                    end_date_obj['iso'].replace('Z', '+00:00')
+                ).date()
+            except Exception:
+                pass
+
+        # Get club/location from clubObject
+        club_obj = api_data.get('clubObject', {})
+        if isinstance(club_obj, dict):
+            club_name = club_obj.get('name', '')
+            if club_name:
+                data['location'] = club_name
+
+        return data
 
     def _extract_regatta_metadata(self, soup, regatta_id, url):
         """Extract regatta information from the page"""
@@ -345,12 +464,13 @@ class ClubspotScraper:
         return datetime.utcnow().date()
 
 
-def run_scraper(limit=None):
+def run_scraper(limit=None, start_year=2024):
     """
     Convenience function to run the scraper
 
     Args:
-        limit: Max regattas to scrape
+        limit: Max regattas to scrape (default: all available)
+        start_year: Only scrape regattas from this year onwards (default: 2024)
     """
     scraper = ClubspotScraper()
-    return scraper.scrape_all_regattas(limit=limit)
+    return scraper.scrape_all_regattas(limit=limit, start_year=start_year)
