@@ -365,6 +365,28 @@ def api_run_scraper():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/scraper/stop', methods=['POST'])
+@login_required
+def api_stop_scraper():
+    """Stop currently running scraper (admin only)"""
+    try:
+        from scraper import stop_scraper
+        stopped = stop_scraper()
+
+        if stopped:
+            return jsonify({
+                'success': True,
+                'message': 'Scraper stop requested'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'No scraper currently running'
+            }), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 # ============================================================================
 # AUTHENTICATION ROUTES
 # ============================================================================

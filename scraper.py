@@ -1,23 +1,44 @@
 """
 Web scraper for theclubspot.com regatta results
-Uses Parse API to fetch all regatta IDs, then scrapes each regatta's results
+Uses Parse API to fetch all regatta IDs, then Selenium to scrape results
 """
 import requests
-from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from models import db, Sailor, Regatta, Result, ScraperLog
 import logging
 import re
 import time
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def make_driver():
+    """Create a headless Chrome driver optimized for speed"""
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--blink-settings=imagesEnabled=false")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--log-level=3")
+    options.page_load_strategy = "eager"
+    driver = webdriver.Chrome(options=options)
+    driver.set_page_load_timeout(30)
+    return driver
+
+
 class ClubspotScraper:
     """Scraper for theclubspot.com regatta results"""
 
-    def __init__(self):
+    def __init__(self, log_id=None):
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -27,6 +48,7 @@ class ClubspotScraper:
             'sailors_added': 0,
             'results_added': 0
         }
+        self.log_id = log_id  # Track which ScraperLog we're updating
 
         # Parse API configuration for fetching regatta IDs
         self.parse_headers = {
@@ -36,6 +58,21 @@ class ClubspotScraper:
             'User-Agent': 'Mozilla/5.0',
         }
         self.parse_api_url = 'https://theclubspot.com/parse/classes/regattas'
+
+    def should_stop(self):
+        """Check if we should stop scraping (user requested cancellation)"""
+        if not self.log_id:
+            return False
+
+        try:
+            log = ScraperLog.query.get(self.log_id)
+            if log and log.status == 'cancelled':
+                logger.info("Stop requested by user, cancelling scraper...")
+                return True
+        except Exception as e:
+            logger.error(f"Error checking stop status: {e}")
+
+        return False
 
     def fetch_all_regatta_ids(self, limit=None, start_year=None):
         """
@@ -106,6 +143,7 @@ class ClubspotScraper:
         log = ScraperLog(status='running')
         db.session.add(log)
         db.session.commit()
+        self.log_id = log.id
 
         try:
             logger.info("Starting scraper...")
@@ -123,12 +161,32 @@ class ClubspotScraper:
             logger.info(f"Found {len(regattas_data)} regattas to scrape")
 
             for idx, regatta_data in enumerate(regattas_data, 1):
+                # Check if user requested stop
+                if self.should_stop():
+                    log.status = 'cancelled'
+                    log.completed_at = datetime.utcnow()
+                    log.regattas_scraped = self.stats['regattas_scraped']
+                    log.sailors_added = self.stats['sailors_added']
+                    log.results_added = self.stats['results_added']
+                    db.session.commit()
+                    logger.info(f"Scraper cancelled by user after {idx-1} regattas")
+                    return self.stats
+
                 regatta_id = regatta_data.get('objectId')
                 regatta_name = regatta_data.get('name', 'Unknown')
                 logger.info(f"[{idx}/{len(regattas_data)}] Scraping: {regatta_name} ({regatta_id})")
+
                 try:
                     self._scrape_regatta(regatta_id, regatta_data)
                     self.stats['regattas_scraped'] += 1
+
+                    # Update progress in database periodically
+                    if idx % 10 == 0:
+                        log.regattas_scraped = self.stats['regattas_scraped']
+                        log.sailors_added = self.stats['sailors_added']
+                        log.results_added = self.stats['results_added']
+                        db.session.commit()
+
                     time.sleep(2)  # Be polite, don't hammer the server
                 except Exception as e:
                     logger.error(f"Error scraping {regatta_id}: {e}")
@@ -154,7 +212,7 @@ class ClubspotScraper:
 
     def _scrape_regatta(self, regatta_id, api_data=None):
         """
-        Scrape a single regatta by ID
+        Scrape a single regatta by ID using Selenium
 
         Args:
             regatta_id: The clubspot regatta ID
@@ -163,48 +221,185 @@ class ClubspotScraper:
         url = f"https://theclubspot.com/regatta/{regatta_id}"
 
         try:
-            # Create or update regatta record using API data if available
+            # Create or update regatta record using API data
             if api_data:
                 regatta_metadata = self._parse_api_regatta_data(api_data, regatta_id, url)
             else:
-                # Fallback: scrape the regatta page for metadata
-                response = self.session.get(url, timeout=30)
-                if response.status_code != 200:
-                    logger.warning(f"Failed to fetch {url}: {response.status_code}")
-                    return
-                soup = BeautifulSoup(response.content, 'lxml')
-                regatta_metadata = self._extract_regatta_metadata(soup, regatta_id, url)
+                regatta_metadata = {
+                    'source_url': url,
+                    'external_id': regatta_id,
+                    'name': f'Regatta {regatta_id}',
+                    'start_date': datetime.utcnow().date()
+                }
 
             regatta = self._get_or_create_regatta(regatta_metadata)
 
-            # Now fetch the results page
-            results_url = f"{url}/results"
-            results_response = self.session.get(results_url, timeout=30)
+            # Now scrape results using Selenium
+            results_url = f"{url}/results?list_view=true"
+            results_data = self._scrape_results_with_selenium(results_url, regatta.id)
 
-            if results_response.status_code == 200:
-                results_soup = BeautifulSoup(results_response.content, 'lxml')
-                results_data = self._extract_results(results_soup, regatta.id)
-
-                # Save results to database
-                for result_data in results_data:
-                    self._save_result(result_data, regatta.id)
+            # Save results to database
+            for result_data in results_data:
+                self._save_result(result_data, regatta.id)
 
         except Exception as e:
             logger.error(f"Error in _scrape_regatta for {regatta_id}: {e}")
             raise
 
-    def _parse_api_regatta_data(self, api_data, regatta_id, url):
+    def _scrape_results_with_selenium(self, results_url, regatta_id, timeout=12):
         """
-        Parse regatta metadata from Parse API response
+        Scrape results page using Selenium to handle JavaScript rendering
+        Based on user's proven scraping logic
 
         Args:
-            api_data: Dict from Parse API with regatta data
-            regatta_id: The regatta objectId
-            url: The regatta URL
+            results_url: URL of the results page
+            regatta_id: Database ID of the regatta
+            timeout: Seconds to wait for page to load
 
         Returns:
-            Dict with regatta metadata for database
+            List of result dicts with sailor names and placements
         """
+        driver = None
+        results = []
+
+        try:
+            driver = make_driver()
+            driver.get(results_url)
+
+            # Wait for any table rows to appear
+            def any_rows_present(d):
+                # Classic table rows with TDs
+                if d.find_elements(By.CSS_SELECTOR, "table tbody tr td"):
+                    return True
+                # Virtualized/data-grid rows
+                if d.find_elements(By.CSS_SELECTOR, "[role='row'] [role='gridcell'], .ag-row .ag-cell"):
+                    return True
+                return False
+
+            try:
+                WebDriverWait(driver, timeout).until(any_rows_present)
+            except TimeoutException:
+                logger.warning(f"Timeout waiting for results table at {results_url}")
+                return []
+
+            # JavaScript to extract all data rows (excluding headers)
+            HARVEST_JS = r"""
+const out = new Set();
+
+// 1) Classic tables: only rows in <tbody> that have at least one <td>
+document.querySelectorAll("table").forEach(tbl => {
+    tbl.querySelectorAll("tbody tr").forEach(tr => {
+        const tds = Array.from(tr.querySelectorAll("td"));
+        if (tds.length === 0) return;
+        const parts = tds.map(td => (td.innerText || td.textContent || "").trim()).filter(Boolean);
+        const line = parts.join(" | ").trim();
+        if (line) out.add(line);
+    });
+});
+
+// 2) WAI-ARIA grids
+document.querySelectorAll("[role='row']").forEach(row => {
+    const cells = Array.from(row.querySelectorAll("[role='gridcell'], [role='cell']"));
+    if (cells.length === 0) return;
+    const parts = cells.map(c => (c.innerText || c.textContent || "").trim()).filter(Boolean);
+    const line = parts.join(" | ").trim();
+    if (line) out.add(line);
+});
+
+// 3) AG Grid
+document.querySelectorAll(".ag-row").forEach(row => {
+    const cells = Array.from(row.querySelectorAll(".ag-cell"));
+    if (cells.length === 0) return;
+    const parts = cells.map(c => (c.innerText || c.textContent || "").trim()).filter(Boolean);
+    const line = parts.join(" | ").trim();
+    if (line) out.add(line);
+});
+
+return Array.from(out);
+"""
+
+            # Scroll to load lazy content
+            for _ in range(8):
+                driver.execute_script("window.scrollBy(0, Math.max(600, window.innerHeight));")
+                time.sleep(0.2)
+
+            # Extract all row data
+            rows_text = driver.execute_script(HARVEST_JS) or []
+
+            # Parse each row to extract sailor name and placement
+            for row_text in rows_text:
+                result_data = self._parse_result_row(row_text)
+                if result_data:
+                    results.append(result_data)
+
+            logger.info(f"Extracted {len(results)} results from {results_url}")
+            return results
+
+        except Exception as e:
+            logger.error(f"Error scraping results with Selenium: {e}")
+            return []
+        finally:
+            if driver:
+                driver.quit()
+
+    def _parse_result_row(self, row_text):
+        """
+        Parse a single row of results text to extract sailor data
+
+        Args:
+            row_text: Pipe-separated row text (e.g., "1 | 12345 | John Doe | 15.0")
+
+        Returns:
+            Dict with sailor_name, placement, and optionally points_scored
+        """
+        try:
+            # Split by pipe separator
+            parts = [p.strip() for p in row_text.split('|')]
+
+            if len(parts) < 2:
+                return None
+
+            # First column is usually placement
+            placement_text = parts[0]
+            placement = self._extract_placement(placement_text)
+
+            if not placement:
+                return None
+
+            # Find sailor name (usually 2nd or 3rd column, not a number)
+            sailor_name = None
+            for part in parts[1:5]:  # Check next few columns
+                if part and len(part) > 2 and not part.replace('.', '').isdigit():
+                    # Split on newlines if multiple names
+                    names = part.split('\n')
+                    sailor_name = names[0].strip()
+                    break
+
+            if not sailor_name:
+                return None
+
+            result_data = {
+                'placement': placement,
+                'sailor_name': sailor_name
+            }
+
+            # Try to extract points (usually last column)
+            for part in reversed(parts[-3:]):
+                try:
+                    points = float(part)
+                    result_data['points_scored'] = points
+                    break
+                except ValueError:
+                    continue
+
+            return result_data
+
+        except Exception as e:
+            logger.debug(f"Error parsing result row: {e}")
+            return None
+
+    def _parse_api_regatta_data(self, api_data, regatta_id, url):
+        """Parse regatta metadata from Parse API response"""
         data = {
             'source_url': url,
             'external_id': regatta_id,
@@ -241,121 +436,6 @@ class ClubspotScraper:
                 data['location'] = club_name
 
         return data
-
-    def _extract_regatta_metadata(self, soup, regatta_id, url):
-        """Extract regatta information from the page"""
-        data = {
-            'source_url': url,
-            'external_id': regatta_id
-        }
-
-        # Try to find regatta name
-        name_elem = soup.select_one('h2') or soup.select_one('h1')
-        if name_elem:
-            data['name'] = name_elem.get_text(strip=True)
-        else:
-            data['name'] = f"Regatta {regatta_id}"
-
-        # Try to find location (look for common patterns)
-        location_patterns = [
-            soup.select_one('.location'),
-            soup.select_one('[class*="location"]'),
-            soup.find(string=re.compile(r'Location:', re.I))
-        ]
-
-        for elem in location_patterns:
-            if elem:
-                location_text = elem.get_text(strip=True) if hasattr(elem, 'get_text') else str(elem)
-                data['location'] = location_text.replace('Location:', '').strip()
-                break
-
-        # Try to find dates
-        date_elem = soup.select_one('.date') or soup.select_one('[class*="date"]')
-        if date_elem:
-            date_text = date_elem.get_text(strip=True)
-            data['start_date'] = self._parse_date(date_text)
-        else:
-            # Fallback to current date if we can't find it
-            data['start_date'] = datetime.utcnow().date()
-
-        # Try to find fleet type
-        fleet_elem = soup.select_one('.fleet') or soup.select_one('[class*="class"]')
-        if fleet_elem:
-            data['fleet_type'] = fleet_elem.get_text(strip=True)
-
-        return data
-
-    def _extract_results(self, soup, regatta_id):
-        """
-        Extract results from the results page
-
-        Note: This is simplified since the page uses JavaScript.
-        For better results, we'd need to use Selenium or requests-html
-        to render JavaScript first.
-        """
-        results = []
-
-        # Look for table with results
-        # The page might have multiple possible table structures
-        tables = soup.find_all('table')
-
-        for table in tables:
-            rows = table.select('tbody tr') if table.select('tbody') else table.select('tr')
-
-            for row in rows:
-                cells = row.find_all(['td', 'th'])
-                if len(cells) < 2:
-                    continue
-
-                try:
-                    # Try to extract data from cells
-                    # Common patterns: [Place, Sail#, Boat, Skipper/Crew, Points]
-
-                    # Look for placement (usually first column)
-                    placement_text = cells[0].get_text(strip=True)
-                    placement = self._extract_placement(placement_text)
-
-                    if not placement:
-                        continue
-
-                    # Try to find sailor name (usually in middle columns)
-                    sailor_name = None
-                    for cell in cells[1:4]:  # Check next few columns
-                        text = cell.get_text(strip=True)
-                        if text and len(text) > 2 and not text.isdigit():
-                            # Split on newlines or <br> tags
-                            names = text.split('\n')
-                            sailor_name = names[0].strip()
-                            break
-
-                    if not sailor_name:
-                        continue
-
-                    result_data = {
-                        'placement': placement,
-                        'sailor_name': sailor_name
-                    }
-
-                    # Try to extract additional data
-                    if len(cells) > 3:
-                        # Look for points
-                        for cell in cells[-3:]:
-                            text = cell.get_text(strip=True)
-                            try:
-                                points = float(text)
-                                result_data['points_scored'] = points
-                                break
-                            except ValueError:
-                                continue
-
-                    results.append(result_data)
-
-                except Exception as e:
-                    logger.warning(f"Error parsing row: {e}")
-                    continue
-
-        logger.info(f"Extracted {len(results)} results from regatta {regatta_id}")
-        return results
 
     def _save_result(self, result_data, regatta_id):
         """Save a single result to the database"""
@@ -441,28 +521,6 @@ class ClubspotScraper:
         match = re.search(r'(\d+)', text)
         return int(match.group(1)) if match else None
 
-    @staticmethod
-    def _parse_date(date_text):
-        """Parse date from various formats"""
-        formats = [
-            '%m/%d/%Y',
-            '%Y-%m-%d',
-            '%B %d, %Y',
-            '%b %d, %Y',
-            '%d %B %Y',
-            '%d %b %Y'
-        ]
-
-        for fmt in formats:
-            try:
-                return datetime.strptime(date_text.strip(), fmt).date()
-            except ValueError:
-                continue
-
-        # If all else fails, return today
-        logger.warning(f"Could not parse date: {date_text}")
-        return datetime.utcnow().date()
-
 
 def run_scraper(limit=None, start_year=2024):
     """
@@ -474,3 +532,23 @@ def run_scraper(limit=None, start_year=2024):
     """
     scraper = ClubspotScraper()
     return scraper.scrape_all_regattas(limit=limit, start_year=start_year)
+
+
+def stop_scraper():
+    """
+    Stop any currently running scraper by marking it as cancelled
+
+    Returns:
+        True if a scraper was stopped, False otherwise
+    """
+    try:
+        running_log = ScraperLog.query.filter_by(status='running').first()
+        if running_log:
+            running_log.status = 'cancelled'
+            db.session.commit()
+            logger.info(f"Marked scraper log {running_log.id} as cancelled")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error stopping scraper: {e}")
+        return False
