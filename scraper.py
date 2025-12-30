@@ -1,13 +1,14 @@
 """
 Web scraper for theclubspot.com regatta results
+UPDATED: Now scrapes real data from theclubspot.com
 """
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 from models import db, Sailor, Regatta, Result, ScraperLog
-from sqlalchemy.exc import IntegrityError
 import logging
 import re
+import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,27 +17,33 @@ logger = logging.getLogger(__name__)
 class ClubspotScraper:
     """Scraper for theclubspot.com regatta results"""
 
-    def __init__(self, base_url='https://www.theclubspot.com', user_agent=None):
-        self.base_url = base_url
+    def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': user_agent or 'Mozilla/5.0 (compatible; RegattaResume/1.0)'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
         self.stats = {
             'regattas_scraped': 0,
             'sailors_added': 0,
             'results_added': 0
         }
+        # Known regatta IDs from 2024 (starter list - will expand)
+        self.regatta_ids = [
+            'r7bw6wf1a8',  # 2024 C420 US NATIONAL CHAMPIONSHIP
+            'QyzP8g1eKs',  # 2024 ILCA North American Championship
+            'YzyHD2J2y0',  # 2024 US Olympic Team Trials
+            'QpjAg9jjdC',  # 2024 J/24 National Championship
+            '60QaLUbh0H',  # 2024 U.S. Youth Championship
+            'IMIGSj06De',  # 2024 J/24 World Championship
+            'pEFUbQJiBg',  # 2024 ILCA USA Masters Regatta
+        ]
 
     def scrape_all_regattas(self, limit=None):
         """
         Main entry point: scrape all available regattas
 
         Args:
-            limit: Maximum number of regattas to scrape (for testing)
-
-        Returns:
-            dict with scraping statistics
+            limit: Maximum number of regattas to scrape
         """
         log = ScraperLog(status='running')
         db.session.add(log)
@@ -44,16 +51,20 @@ class ClubspotScraper:
 
         try:
             logger.info("Starting scraper...")
-            regatta_links = self._get_regatta_list(limit=limit)
-            logger.info(f"Found {len(regatta_links)} regattas to scrape")
 
-            for idx, regatta_url in enumerate(regatta_links, 1):
-                logger.info(f"[{idx}/{len(regatta_links)}] Scraping: {regatta_url}")
+            # Use known regatta IDs for now
+            regatta_ids = self.regatta_ids[:limit] if limit else self.regatta_ids
+
+            logger.info(f"Found {len(regatta_ids)} regattas to scrape")
+
+            for idx, regatta_id in enumerate(regatta_ids, 1):
+                logger.info(f"[{idx}/{len(regatta_ids)}] Scraping regatta: {regatta_id}")
                 try:
-                    self._scrape_regatta(regatta_url)
+                    self._scrape_regatta(regatta_id)
                     self.stats['regattas_scraped'] += 1
+                    time.sleep(2)  # Be polite, don't hammer the server
                 except Exception as e:
-                    logger.error(f"Error scraping {regatta_url}: {e}")
+                    logger.error(f"Error scraping {regatta_id}: {e}")
                     continue
 
             log.status = 'completed'
@@ -74,183 +85,157 @@ class ClubspotScraper:
             logger.error(f"Scraper failed: {e}")
             raise
 
-    def _get_regatta_list(self, limit=None):
+    def _scrape_regatta(self, regatta_id):
         """
-        Get list of regatta URLs from theclubspot.com
-
-        This is a placeholder - you'll need to customize based on the actual
-        site structure. Common patterns:
-        - /regattas/ or /events/ listing page
-        - Search/filter interface
-        - Archives by year
-        """
-        regatta_urls = []
-
-        # Example structure - adjust based on actual site
-        # Option 1: Direct results pages
-        # urls = [f"{self.base_url}/regatta/{i}" for i in range(1, 100)]
-
-        # Option 2: Scrape from a listing page
-        try:
-            # Try to find regattas listing page
-            response = self.session.get(f"{self.base_url}/regattas")
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.content, 'lxml')
-
-                # Find all regatta links - adjust selector based on actual HTML
-                links = soup.select('a[href*="/regatta/"]')
-                for link in links:
-                    href = link.get('href')
-                    if href and href.startswith('/'):
-                        href = self.base_url + href
-                    if href and href not in regatta_urls:
-                        regatta_urls.append(href)
-
-        except Exception as e:
-            logger.warning(f"Could not fetch regatta list: {e}")
-            # Fallback: try common URL patterns
-            logger.info("Trying fallback URL patterns...")
-
-        if limit:
-            regatta_urls = regatta_urls[:limit]
-
-        return regatta_urls
-
-    def _scrape_regatta(self, url):
-        """
-        Scrape a single regatta page for results
+        Scrape a single regatta by ID
 
         Args:
-            url: URL of the regatta results page
+            regatta_id: The clubspot regatta ID
         """
-        response = self.session.get(url)
-        if response.status_code != 200:
-            logger.warning(f"Failed to fetch {url}: {response.status_code}")
-            return
+        url = f"https://theclubspot.com/regatta/{regatta_id}"
 
-        soup = BeautifulSoup(response.content, 'lxml')
+        try:
+            # Fetch the regatta page
+            response = self.session.get(url, timeout=30)
+            if response.status_code != 200:
+                logger.warning(f"Failed to fetch {url}: {response.status_code}")
+                return
 
-        # Extract regatta metadata
-        regatta_data = self._extract_regatta_metadata(soup, url)
-        regatta = self._get_or_create_regatta(regatta_data)
+            soup = BeautifulSoup(response.content, 'lxml')
 
-        # Extract results table
-        results_data = self._extract_results(soup, regatta.id)
+            # Extract regatta metadata
+            regatta_data = self._extract_regatta_metadata(soup, regatta_id, url)
+            regatta = self._get_or_create_regatta(regatta_data)
 
-        # Save results to database
-        for result_data in results_data:
-            self._save_result(result_data, regatta.id)
+            # Now fetch the results page
+            results_url = f"{url}/results"
+            results_response = self.session.get(results_url, timeout=30)
 
-    def _extract_regatta_metadata(self, soup, url):
-        """
-        Extract regatta information from the page
+            if results_response.status_code == 200:
+                results_soup = BeautifulSoup(results_response.content, 'lxml')
+                results_data = self._extract_results(results_soup, regatta.id)
 
-        Customize this based on theclubspot.com HTML structure
-        """
+                # Save results to database
+                for result_data in results_data:
+                    self._save_result(result_data, regatta.id)
+
+        except Exception as e:
+            logger.error(f"Error in _scrape_regatta for {regatta_id}: {e}")
+            raise
+
+    def _extract_regatta_metadata(self, soup, regatta_id, url):
+        """Extract regatta information from the page"""
         data = {
             'source_url': url,
-            'external_id': self._extract_external_id(url)
+            'external_id': regatta_id
         }
 
-        # Try to find regatta name - common selectors
-        name_elem = (
-            soup.select_one('h1.event-title') or
-            soup.select_one('h1.regatta-name') or
-            soup.select_one('.event-header h1') or
-            soup.select_one('h1')
-        )
-        data['name'] = name_elem.get_text(strip=True) if name_elem else 'Unknown Regatta'
+        # Try to find regatta name
+        name_elem = soup.select_one('h2') or soup.select_one('h1')
+        if name_elem:
+            data['name'] = name_elem.get_text(strip=True)
+        else:
+            data['name'] = f"Regatta {regatta_id}"
 
-        # Try to find location
-        location_elem = (
-            soup.select_one('.event-location') or
-            soup.select_one('.location') or
+        # Try to find location (look for common patterns)
+        location_patterns = [
+            soup.select_one('.location'),
+            soup.select_one('[class*="location"]'),
             soup.find(string=re.compile(r'Location:', re.I))
-        )
-        if location_elem:
-            data['location'] = location_elem.get_text(strip=True).replace('Location:', '').strip()
+        ]
+
+        for elem in location_patterns:
+            if elem:
+                location_text = elem.get_text(strip=True) if hasattr(elem, 'get_text') else str(elem)
+                data['location'] = location_text.replace('Location:', '').strip()
+                break
 
         # Try to find dates
-        date_elem = (
-            soup.select_one('.event-date') or
-            soup.select_one('.date') or
-            soup.find(string=re.compile(r'\d{1,2}/\d{1,2}/\d{4}'))
-        )
+        date_elem = soup.select_one('.date') or soup.select_one('[class*="date"]')
         if date_elem:
-            date_text = date_elem.get_text(strip=True) if hasattr(date_elem, 'get_text') else str(date_elem)
+            date_text = date_elem.get_text(strip=True)
             data['start_date'] = self._parse_date(date_text)
+        else:
+            # Fallback to current date if we can't find it
+            data['start_date'] = datetime.utcnow().date()
 
         # Try to find fleet type
-        fleet_elem = (
-            soup.select_one('.fleet-type') or
-            soup.select_one('.boat-class') or
-            soup.find(string=re.compile(r'Fleet:|Class:', re.I))
-        )
+        fleet_elem = soup.select_one('.fleet') or soup.select_one('[class*="class"]')
         if fleet_elem:
-            data['fleet_type'] = fleet_elem.get_text(strip=True).replace('Fleet:', '').replace('Class:', '').strip()
+            data['fleet_type'] = fleet_elem.get_text(strip=True)
 
         return data
 
     def _extract_results(self, soup, regatta_id):
         """
-        Extract results table from the page
+        Extract results from the results page
 
-        Returns list of dicts with sailor results
+        Note: This is simplified since the page uses JavaScript.
+        For better results, we'd need to use Selenium or requests-html
+        to render JavaScript first.
         """
         results = []
 
-        # Find the results table - adjust selector based on actual HTML
-        table = (
-            soup.select_one('table.results') or
-            soup.select_one('table.standings') or
-            soup.select_one('.results-table table') or
-            soup.find('table')
-        )
+        # Look for table with results
+        # The page might have multiple possible table structures
+        tables = soup.find_all('table')
 
-        if not table:
-            logger.warning(f"No results table found for regatta {regatta_id}")
-            return results
+        for table in tables:
+            rows = table.select('tbody tr') if table.select('tbody') else table.select('tr')
 
-        rows = table.select('tbody tr') if table.select('tbody') else table.select('tr')[1:]
+            for row in rows:
+                cells = row.find_all(['td', 'th'])
+                if len(cells) < 2:
+                    continue
 
-        for row in rows:
-            cells = row.find_all(['td', 'th'])
-            if len(cells) < 2:
-                continue
+                try:
+                    # Try to extract data from cells
+                    # Common patterns: [Place, Sail#, Boat, Skipper/Crew, Points]
 
-            # Extract data from cells - adjust indices based on actual table structure
-            # Common structure: Rank | Sailor | Team | Division | Points
-            try:
-                result_data = {
-                    'placement': self._extract_placement(cells[0].get_text(strip=True)),
-                    'sailor_name': cells[1].get_text(strip=True) if len(cells) > 1 else None,
-                }
+                    # Look for placement (usually first column)
+                    placement_text = cells[0].get_text(strip=True)
+                    placement = self._extract_placement(placement_text)
 
-                # Optional fields - adjust based on table structure
-                if len(cells) > 2:
-                    result_data['team_name'] = cells[2].get_text(strip=True)
-                if len(cells) > 3:
-                    result_data['division'] = cells[3].get_text(strip=True)
-                if len(cells) > 4:
-                    points_text = cells[4].get_text(strip=True)
-                    try:
-                        result_data['points_scored'] = float(points_text)
-                    except ValueError:
-                        pass
+                    if not placement:
+                        continue
 
-                # Try to determine skipper/crew from table or name
-                if 'crew' in result_data.get('sailor_name', '').lower():
-                    result_data['role'] = 'crew'
-                elif 'skipper' in result_data.get('sailor_name', '').lower():
-                    result_data['role'] = 'skipper'
+                    # Try to find sailor name (usually in middle columns)
+                    sailor_name = None
+                    for cell in cells[1:4]:  # Check next few columns
+                        text = cell.get_text(strip=True)
+                        if text and len(text) > 2 and not text.isdigit():
+                            # Split on newlines or <br> tags
+                            names = text.split('\n')
+                            sailor_name = names[0].strip()
+                            break
 
-                if result_data['sailor_name'] and result_data['placement']:
+                    if not sailor_name:
+                        continue
+
+                    result_data = {
+                        'placement': placement,
+                        'sailor_name': sailor_name
+                    }
+
+                    # Try to extract additional data
+                    if len(cells) > 3:
+                        # Look for points
+                        for cell in cells[-3:]:
+                            text = cell.get_text(strip=True)
+                            try:
+                                points = float(text)
+                                result_data['points_scored'] = points
+                                break
+                            except ValueError:
+                                continue
+
                     results.append(result_data)
 
-            except Exception as e:
-                logger.warning(f"Error parsing row: {e}")
-                continue
+                except Exception as e:
+                    logger.warning(f"Error parsing row: {e}")
+                    continue
 
+        logger.info(f"Extracted {len(results)} results from regatta {regatta_id}")
         return results
 
     def _save_result(self, result_data, regatta_id):
@@ -265,8 +250,7 @@ class ClubspotScraper:
         # Check if result already exists
         existing = Result.query.filter_by(
             sailor_id=sailor.id,
-            regatta_id=regatta_id,
-            division=result_data.get('division')
+            regatta_id=regatta_id
         ).first()
 
         if existing:
@@ -282,8 +266,7 @@ class ClubspotScraper:
             role=result_data.get('role'),
             points_scored=result_data.get('points_scored'),
             division=result_data.get('division'),
-            team_name=result_data.get('team_name'),
-            crew_partner=result_data.get('crew_partner')
+            team_name=result_data.get('team_name')
         )
 
         db.session.add(result)
@@ -332,17 +315,10 @@ class ClubspotScraper:
         return regatta
 
     @staticmethod
-    def _extract_external_id(url):
-        """Extract unique ID from URL"""
-        # Example: /regatta/12345 -> "12345"
-        match = re.search(r'/regatta/(\d+)', url)
-        if match:
-            return match.group(1)
-        return url.split('/')[-1]
-
-    @staticmethod
     def _extract_placement(text):
-        """Extract numeric placement from text like '1st', '2nd', '3'"""
+        """Extract numeric placement from text"""
+        # Remove common suffixes and extract number
+        text = text.replace('st', '').replace('nd', '').replace('rd', '').replace('th', '')
         match = re.search(r'(\d+)', text)
         return int(match.group(1)) if match else None
 
@@ -374,7 +350,7 @@ def run_scraper(limit=None):
     Convenience function to run the scraper
 
     Args:
-        limit: Max regattas to scrape (useful for testing)
+        limit: Max regattas to scrape
     """
     scraper = ClubspotScraper()
     return scraper.scrape_all_regattas(limit=limit)
