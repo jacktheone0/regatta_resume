@@ -79,6 +79,53 @@
         </div>
     </div>
 
+    <!-- Table Inspector -->
+    <div class="card mb-4">
+        <div class="card-header bg-info text-white">
+            <h5 class="mb-0">🔍 Table Structure Inspector</h5>
+        </div>
+        <div class="card-body">
+            <p>Inspect the table structure of any regatta to see column headers and sample data. Useful for debugging scraper issues.</p>
+
+            <div class="row g-3">
+                <div class="col-md-8">
+                    <input type="text" id="inspectRegattaId" class="form-control" placeholder="Enter regatta ID (e.g., r7bw6wf1a8)" />
+                    <small class="form-text text-muted">Find regatta IDs from URLs like: theclubspot.com/regatta/<strong>r7bw6wf1a8</strong></small>
+                </div>
+                <div class="col-md-4">
+                    <button id="inspectBtn" class="btn btn-info w-100">Inspect Table</button>
+                </div>
+            </div>
+
+            <div id="inspectResults" class="mt-4" style="display: none;">
+                <div id="inspectError" class="alert alert-danger" style="display: none;"></div>
+
+                <div id="inspectData">
+                    <h6>Table Information</h6>
+                    <div class="mb-3">
+                        <strong>URL:</strong> <a id="inspectUrl" href="#" target="_blank"></a><br>
+                        <strong>Table Type:</strong> <span id="inspectTableType" class="badge bg-secondary"></span><br>
+                        <strong>Columns:</strong> <span id="inspectNumCols"></span><br>
+                        <strong>Sample Rows:</strong> <span id="inspectNumRows"></span>
+                    </div>
+
+                    <h6>Column Headers</h6>
+                    <div id="inspectHeaders" class="mb-3">
+                        <div class="d-flex flex-wrap gap-2"></div>
+                    </div>
+
+                    <h6>Sample Data (First 10 Rows)</h6>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-bordered" id="inspectTable">
+                            <thead id="inspectTableHead"></thead>
+                            <tbody id="inspectTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Quick Actions -->
     <div class="card">
         <div class="card-header">
@@ -205,6 +252,113 @@ document.getElementById('stopScraperBtn').addEventListener('click', async functi
 
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-stop-circle"></i> Stop Scraper';
+    }
+});
+
+// Table inspector handler
+document.getElementById('inspectBtn').addEventListener('click', async function() {
+    const btn = this;
+    const regattaId = document.getElementById('inspectRegattaId').value.trim();
+    const resultsDiv = document.getElementById('inspectResults');
+    const errorDiv = document.getElementById('inspectError');
+    const dataDiv = document.getElementById('inspectData');
+
+    if (!regattaId) {
+        alert('Please enter a regatta ID');
+        return;
+    }
+
+    // Disable button and show loading
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Inspecting...';
+    errorDiv.style.display = 'none';
+    resultsDiv.style.display = 'block';
+    dataDiv.style.display = 'none';
+
+    try {
+        const response = await fetch('/api/scraper/inspect', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ regatta_id: regattaId })
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+            errorDiv.textContent = 'Error: ' + data.error;
+            errorDiv.style.display = 'block';
+            dataDiv.style.display = 'none';
+        } else {
+            // Display results
+            document.getElementById('inspectUrl').href = data.url || '#';
+            document.getElementById('inspectUrl').textContent = data.url || 'N/A';
+            document.getElementById('inspectTableType').textContent = data.table_type || 'unknown';
+            document.getElementById('inspectNumCols').textContent = data.num_columns || 0;
+            document.getElementById('inspectNumRows').textContent = data.num_sample_rows || 0;
+
+            // Display headers as badges
+            const headersDiv = document.getElementById('inspectHeaders').querySelector('div');
+            headersDiv.innerHTML = '';
+            if (data.headers && data.headers.length > 0) {
+                data.headers.forEach((header, idx) => {
+                    const badge = document.createElement('span');
+                    badge.className = 'badge bg-primary';
+                    badge.textContent = `[${idx}] ${header}`;
+                    headersDiv.appendChild(badge);
+                });
+            } else {
+                headersDiv.innerHTML = '<em class="text-muted">No headers found</em>';
+            }
+
+            // Display table
+            const thead = document.getElementById('inspectTableHead');
+            const tbody = document.getElementById('inspectTableBody');
+            thead.innerHTML = '';
+            tbody.innerHTML = '';
+
+            if (data.headers && data.headers.length > 0) {
+                const headerRow = document.createElement('tr');
+                data.headers.forEach((header, idx) => {
+                    const th = document.createElement('th');
+                    th.textContent = `[${idx}] ${header}`;
+                    headerRow.appendChild(th);
+                });
+                thead.appendChild(headerRow);
+            }
+
+            if (data.sample_rows && data.sample_rows.length > 0) {
+                data.sample_rows.forEach(row => {
+                    const tr = document.createElement('tr');
+                    row.forEach(cell => {
+                        const td = document.createElement('td');
+                        td.textContent = cell || '(empty)';
+                        tr.appendChild(td);
+                    });
+                    tbody.appendChild(tr);
+                });
+            } else {
+                const tr = document.createElement('tr');
+                const td = document.createElement('td');
+                td.colSpan = 100;
+                td.textContent = 'No data rows found';
+                td.className = 'text-muted text-center';
+                tr.appendChild(td);
+                tbody.appendChild(tr);
+            }
+
+            errorDiv.style.display = 'none';
+            dataDiv.style.display = 'block';
+        }
+
+    } catch (error) {
+        errorDiv.textContent = 'Error: ' + error.message;
+        errorDiv.style.display = 'block';
+        dataDiv.style.display = 'none';
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = 'Inspect Table';
     }
 });
 

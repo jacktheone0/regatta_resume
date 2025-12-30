@@ -521,6 +521,152 @@ return Array.from(out);
         match = re.search(r'(\d+)', text)
         return int(match.group(1)) if match else None
 
+    @staticmethod
+    def inspect_table_structure(regatta_id, timeout=12):
+        """
+        Inspect the table structure of a regatta's results page
+        Returns headers and sample rows to help with column mapping
+
+        Args:
+            regatta_id: The clubspot regatta ID
+            timeout: Seconds to wait for page to load
+
+        Returns:
+            Dict with 'headers', 'sample_rows', 'url'
+        """
+        driver = None
+        try:
+            driver = make_driver()
+            results_url = f"https://theclubspot.com/regatta/{regatta_id}/results?list_view=true"
+            driver.get(results_url)
+
+            # Wait for table to load
+            def any_rows_present(d):
+                if d.find_elements(By.CSS_SELECTOR, "table tbody tr td"):
+                    return True
+                if d.find_elements(By.CSS_SELECTOR, "[role='row'] [role='gridcell'], .ag-row .ag-cell"):
+                    return True
+                return False
+
+            try:
+                WebDriverWait(driver, timeout).until(any_rows_present)
+            except TimeoutException:
+                return {
+                    'error': 'Timeout waiting for table to load',
+                    'url': results_url
+                }
+
+            # JavaScript to extract headers AND rows
+            INSPECT_JS = r"""
+const result = {
+    headers: [],
+    rows: [],
+    tableType: 'unknown'
+};
+
+// Try to find classic HTML table first
+const classicTable = document.querySelector('table');
+if (classicTable) {
+    result.tableType = 'classic-html-table';
+
+    // Get headers from thead or first row
+    const headerRow = classicTable.querySelector('thead tr') || classicTable.querySelector('tr');
+    if (headerRow) {
+        const headers = Array.from(headerRow.querySelectorAll('th, td'));
+        result.headers = headers.map(h => (h.innerText || h.textContent || "").trim()).filter(Boolean);
+    }
+
+    // Get data rows from tbody
+    const dataRows = classicTable.querySelectorAll('tbody tr');
+    dataRows.forEach((tr, idx) => {
+        if (idx < 10) { // Only get first 10 rows
+            const cells = Array.from(tr.querySelectorAll('td'));
+            const rowData = cells.map(td => (td.innerText || td.textContent || "").trim());
+            if (rowData.some(c => c)) result.rows.push(rowData);
+        }
+    });
+}
+
+// Try AG Grid
+if (result.rows.length === 0) {
+    const agHeader = document.querySelector('.ag-header-row');
+    const agRows = document.querySelectorAll('.ag-row');
+
+    if (agHeader && agRows.length > 0) {
+        result.tableType = 'ag-grid';
+
+        // Get headers
+        const headerCells = agHeader.querySelectorAll('.ag-header-cell');
+        result.headers = Array.from(headerCells).map(h => (h.innerText || h.textContent || "").trim()).filter(Boolean);
+
+        // Get rows
+        agRows.forEach((row, idx) => {
+            if (idx < 10) {
+                const cells = Array.from(row.querySelectorAll('.ag-cell'));
+                const rowData = cells.map(c => (c.innerText || c.textContent || "").trim());
+                if (rowData.some(c => c)) result.rows.push(rowData);
+            }
+        });
+    }
+}
+
+// Try ARIA grids
+if (result.rows.length === 0) {
+    const allRows = Array.from(document.querySelectorAll('[role="row"]'));
+    if (allRows.length > 0) {
+        result.tableType = 'aria-grid';
+
+        // First row might be headers
+        const firstRow = allRows[0];
+        const firstCells = firstRow.querySelectorAll('[role="columnheader"], [role="gridcell"], [role="cell"]');
+        const firstText = Array.from(firstCells).map(c => (c.innerText || c.textContent || "").trim());
+
+        // Check if first row looks like headers (contains words, not numbers)
+        const looksLikeHeader = firstText.some(t => t && /[a-zA-Z]/.test(t) && t.length > 2);
+        if (looksLikeHeader) {
+            result.headers = firstText;
+        }
+
+        // Get data rows
+        allRows.forEach((row, idx) => {
+            if ((looksLikeHeader && idx === 0) || idx >= 10) return; // Skip header row or if we have enough
+            const cells = row.querySelectorAll('[role="gridcell"], [role="cell"]');
+            const rowData = Array.from(cells).map(c => (c.innerText || c.textContent || "").trim());
+            if (rowData.some(c => c)) result.rows.push(rowData);
+        });
+    }
+}
+
+return result;
+"""
+
+            # Scroll to load content
+            for _ in range(8):
+                driver.execute_script("window.scrollBy(0, Math.max(600, window.innerHeight));")
+                time.sleep(0.2)
+
+            # Extract table structure
+            table_data = driver.execute_script(INSPECT_JS)
+
+            return {
+                'url': results_url,
+                'regatta_id': regatta_id,
+                'table_type': table_data.get('tableType', 'unknown'),
+                'headers': table_data.get('headers', []),
+                'sample_rows': table_data.get('rows', []),
+                'num_columns': len(table_data.get('headers', [])),
+                'num_sample_rows': len(table_data.get('rows', []))
+            }
+
+        except Exception as e:
+            return {
+                'error': str(e),
+                'url': f"https://theclubspot.com/regatta/{regatta_id}/results?list_view=true"
+            }
+        finally:
+            if driver:
+                driver.quit()
+
 
 def run_scraper(limit=None, start_year=2024):
     """

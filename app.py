@@ -387,6 +387,25 @@ def api_stop_scraper():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/scraper/inspect', methods=['POST'])
+@login_required
+def api_inspect_regatta():
+    """Inspect table structure of a regatta (admin/debugging tool)"""
+    try:
+        data = request.get_json()
+        regatta_id = data.get('regatta_id')
+
+        if not regatta_id:
+            return jsonify({'error': 'regatta_id is required'}), 400
+
+        from scraper import ClubspotScraper
+        result = ClubspotScraper.inspect_table_structure(regatta_id)
+
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 # ============================================================================
 # AUTHENTICATION ROUTES
 # ============================================================================
