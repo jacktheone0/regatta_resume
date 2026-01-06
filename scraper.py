@@ -319,55 +319,96 @@ class ClubspotScraper:
                 driver.quit()
 
     def _get_table_extraction_js(self):
-        """JavaScript to extract table headers and rows"""
         return r"""
-const result = {
-    headers: [],
-    rows: [],
-    tableType: 'unknown'
-};
-
-// Try to find classic HTML table first
-const classicTable = document.querySelector('table');
-if (classicTable) {
-    result.tableType = 'classic-html-table';
-
-    // Get headers from thead or first row
-    const headerRow = classicTable.querySelector('thead tr') || classicTable.querySelector('tr');
-    if (headerRow) {
-        const headers = Array.from(headerRow.querySelectorAll('th, td'));
+    const result = { headers: [], rows: [], tableType: 'unknown' };
+    
+    // ---------- 1) Classic HTML table ----------
+    const classicTable = document.querySelector('table');
+    if (classicTable) {
+      result.tableType = 'classic-html-table';
+    
+      // Prefer THEAD headers
+      const theadRow = classicTable.querySelector('thead tr');
+      if (theadRow) {
+        const headers = Array.from(theadRow.querySelectorAll('th, td'));
         result.headers = headers.map(h => (h.innerText || h.textContent || "").trim()).filter(Boolean);
+      } else {
+        // If no THEAD, try to infer header row only if it looks like headers
+        const firstRow = classicTable.querySelector('tr');
+        if (firstRow) {
+          const cells = Array.from(firstRow.querySelectorAll('th, td'));
+          const text = cells.map(c => (c.innerText || c.textContent || "").trim());
+          const looksLikeHeader = text.some(t => /[A-Za-z]/.test(t) && t.length > 2) && text.every(t => !/^\d+$/.test(t));
+          if (looksLikeHeader) result.headers = text.filter(Boolean);
+        }
+      }
+    
+      // Data rows from TBODY if present, else all TRs excluding an inferred header row
+      const tbodyRows = classicTable.querySelectorAll('tbody tr');
+      if (tbodyRows && tbodyRows.length) {
+        tbodyRows.forEach(tr => {
+          const tds = Array.from(tr.querySelectorAll('td'));
+          const rowData = tds.map(td => (td.innerText || td.textContent || "").trim());
+          if (rowData.some(Boolean)) result.rows.push(rowData);
+        });
+      } else {
+        const allRows = Array.from(classicTable.querySelectorAll('tr'));
+        allRows.forEach((tr, idx) => {
+          // skip header-like first row if we set headers from it
+          if (idx === 0 && result.headers.length) return;
+          const tds = Array.from(tr.querySelectorAll('td'));
+          if (!tds.length) return;
+          const rowData = tds.map(td => (td.innerText || td.textContent || "").trim());
+          if (rowData.some(Boolean)) result.rows.push(rowData);
+        });
+      }
     }
-
-    // Get data rows from tbody
-    const dataRows = classicTable.querySelectorAll('tbody tr');
-    dataRows.forEach((tr) => {
-        const cells = Array.from(tr.querySelectorAll('td'));
-        const rowData = cells.map(td => (td.innerText || td.textContent || "").trim());
-        if (rowData.some(c => c)) result.rows.push(rowData);
-    });
-}
-
-// Try AG Grid if no classic table found
-if (result.rows.length === 0) {
-    const agHeader = document.querySelector('.ag-header-row');
-    const agRows = document.querySelectorAll('.ag-row');
-
-    if (agHeader && agRows.length > 0) {
+    
+    // ---------- 2) AG Grid ----------
+    if (result.rows.length === 0) {
+      const agHeader = document.querySelector('.ag-header-row');
+      const agRows = document.querySelectorAll('.ag-row');
+      if (agHeader && agRows.length > 0) {
         result.tableType = 'ag-grid';
         const headerCells = agHeader.querySelectorAll('.ag-header-cell');
         result.headers = Array.from(headerCells).map(h => (h.innerText || h.textContent || "").trim()).filter(Boolean);
-
-        agRows.forEach((row) => {
-            const cells = Array.from(row.querySelectorAll('.ag-cell'));
-            const rowData = cells.map(c => (c.innerText || c.textContent || "").trim());
-            if (rowData.some(c => c)) result.rows.push(rowData);
+    
+        agRows.forEach(row => {
+          const cells = Array.from(row.querySelectorAll('.ag-cell'));
+          const rowData = cells.map(c => (c.innerText || c.textContent || "").trim());
+          if (rowData.some(Boolean)) result.rows.push(rowData);
         });
+      }
     }
-}
+    
+    // ---------- 3) ARIA grids (role=row + role=gridcell) ----------
+    if (result.rows.length === 0) {
+      const allRows = Array.from(document.querySelectorAll('[role="row"]'));
+      if (allRows.length > 0) {
+        result.tableType = 'aria-grid';
+    
+        // infer headers from first row if it has columnheader or looks like header
+        const first = allRows[0];
+        const headerLike = first.querySelectorAll('[role="columnheader"]').length > 0;
+        const firstCells = first.querySelectorAll('[role="columnheader"], [role="gridcell"], [role="cell"]');
+        const firstText = Array.from(firstCells).map(c => (c.innerText || c.textContent || "").trim()).filter(Boolean);
+        const looksLikeHeader = headerLike || firstText.some(t => /[A-Za-z]/.test(t) && t.length > 2);
+    
+        if (looksLikeHeader) result.headers = firstText;
+    
+        allRows.forEach((row, idx) => {
+          if (looksLikeHeader && idx === 0) return;
+          const cells = row.querySelectorAll('[role="gridcell"], [role="cell"]');
+          if (!cells.length) return;
+          const rowData = Array.from(cells).map(c => (c.innerText || c.textContent || "").trim());
+          if (rowData.some(Boolean)) result.rows.push(rowData);
+        });
+      }
+    }
+    
+    return result;
+    """
 
-return result;
-"""
 
     def _map_column_indices(self, headers):
         """
@@ -401,57 +442,90 @@ return result;
             if 'sail' in h and ('number' in h or 'no' in h or '#' in h):
                 col_map['sail_number'] = idx
                 break
+        for idx, h in enumerate(headers_lower):
+            if 'place' in h or 'rank' in h or h in ('pos', 'position'):
+                col_map['placement'] = idx
+                break
+
 
         return col_map
 
     def _parse_row_with_headers(self, row_data, row_index, col_map):
         """
-        Parse a single row using column header mapping
-        row_index is the placement (1st, 2nd, 3rd, etc.)
-
+        Parse a single row using column header mapping.
+    
+        IMPORTANT CHANGE:
+        - Do NOT assume `row_index` is the placement.
+        - If we can locate a placement/rank column from headers, extract placement from the cell.
+          Otherwise, fall back to `row_index`.
+    
         Returns dict with parsed fields AND raw_row_data (pipe-separated format)
         """
         try:
-            # FIRST: Create raw pipe-separated data (like your CSV format)
-            # Format: "Peter Herlihy | USA 9370 | GOLD | For Sale | NBYC | 39 | 53 | 5 | 1 | 3..."
+            # Raw pipe-separated snapshot (useful for debugging and later re-parsing)
             raw_row_text = " | ".join(str(cell) for cell in row_data)
-
-            # THEN: Parse specific fields
+    
+            # --- Placement: prefer explicit placement column if present ---
+            placement = row_index  # fallback
+            if 'placement' in col_map:
+                placement_text = row_data[col_map['placement']] if col_map['placement'] < len(row_data) else ""
+                placement_parsed = self._extract_placement(str(placement_text))
+                if placement_parsed:
+                    placement = placement_parsed
+    
+            # --- Sailor name: use the mapped sailors column and validate it looks like a person ---
             sailor_name = None
             if 'sailors' in col_map:
-                sailor_col = row_data[col_map['sailors']]
+                idx = col_map['sailors']
+                sailor_col = row_data[idx] if idx < len(row_data) else ""
                 # Split by newline if multiple names (skipper/crew)
-                names = [n.strip() for n in sailor_col.split('\n') if n.strip()]
+                names = [n.strip() for n in str(sailor_col).split('\n') if n.strip()]
                 if names:
-                    sailor_name = names[0]  # Take first name (skipper)
-
+                    # Take first non-empty line that looks like a real person name
+                    for cand in names:
+                        if self._looks_like_person_name(cand):
+                            sailor_name = cand
+                            break
+    
+                    # If none passed validation, fall back to the first line (optional; safer to return None)
+                    if not sailor_name:
+                        sailor_name = names[0]
+    
+            # Hard reject if sailor_name is missing or clearly not a person
             if not sailor_name or len(sailor_name) < 2:
                 return None
-
-            # Validate it's not a number (sail number leaked into name)
-            if sailor_name.replace(' ', '').replace('-', '').isdigit():
+            if not self._looks_like_person_name(sailor_name):
                 return None
-
+    
+            # Reject numeric-only "names" (sail number leaking into name column)
+            compact = sailor_name.replace(' ', '').replace('-', '').replace(',', '')
+            if compact.isdigit():
+                return None
+    
             result_data = {
-                'placement': row_index,  # Row index IS the placement
+                'placement': placement,
                 'sailor_name': sailor_name,
-                'raw_row_data': raw_row_text  # Store complete original row
+                'raw_row_data': raw_row_text
             }
-
-            # Get points from NET or TOTAL column
+    
+            # --- Points: read from NET/TOTAL column if mapped ---
             if 'points' in col_map:
-                points_text = row_data[col_map['points']]
+                pidx = col_map['points']
+                points_text = row_data[pidx] if pidx < len(row_data) else ""
                 try:
-                    points = float(points_text)
-                    # Validate reasonable points range (1-1000)
-                    if 1 <= points <= 1000:
+                    points = float(str(points_text).strip())
+                    # Keep a sanity bound, but allow 0
+                    if 0 <= points <= 5000:
                         result_data['points_scored'] = points
                 except ValueError:
                     pass
-
-            logger.debug(f"Parsed row {row_index}: {sailor_name} = {result_data.get('points_scored', 'N/A')} pts | Raw: {raw_row_text[:100]}...")
+    
+            logger.debug(
+                f"Parsed row {row_index}: placement={placement}, sailor={sailor_name}, "
+                f"points={result_data.get('points_scored', 'N/A')} | Raw: {raw_row_text[:120]}..."
+            )
             return result_data
-
+    
         except Exception as e:
             logger.debug(f"Error parsing row {row_index}: {e}")
             return None
