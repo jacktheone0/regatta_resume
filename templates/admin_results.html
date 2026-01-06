@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+  <title>NEOM – Scraped Results</title>
+  <style>
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ccc; padding: 6px; font-size: 13px; }
+    th { background: #f5f5f5; }
+  </style>
+</head>
+<body>
+
+<h2>Scraped Results (latest first)</h2>
+
+<table>
+  <tr>
+    <th>Regatta</th>
+    <th>Date</th>
+    <th>Sailor</th>
+    <th>Placement</th>
+    <th>Points</th>
+    <th>Raw Row</th>
+  </tr>
+
+  {% for r in results %}
+  <tr>
+    <td>{{ r.regatta.name }}</td>
+    <td>{{ r.regatta.start_date }}</td>
+    <td>{{ r.sailor.name }}</td>
+    <td>{{ r.placement }}</td>
+    <td>{{ r.points_scored or '' }}</td>
+    <td style="max-width:600px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+      {{ r.raw_row_data }}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+
+</body>
+</html>
