@@ -496,6 +496,21 @@ def claim_profile():
     unclaimed_sailors = Sailor.query.filter_by(is_claimed=False).order_by(Sailor.name).all()
 
     return render_template('claim_profile.html', form=form, sailors=unclaimed_sailors)
+@app.route("/admin/results")
+def admin_results():
+    results = (
+        db.session.query(Result)
+        .join(Sailor)
+        .join(Regatta)
+        .order_by(Regatta.start_date.desc(), Result.placement.asc())
+        .limit(500)
+        .all()
+    )
+
+    return render_template(
+        "admin_results.html",
+        results=results
+    )
 
 
 # ============================================================================
@@ -529,6 +544,7 @@ def scrape():
     print("Starting scraper...")
     stats = run_scraper()
     print(f"Scraping complete! Stats: {stats}")
+    
 
 
 # ============================================================================
