@@ -119,6 +119,10 @@ class Result(db.Model):
     team_name = db.Column(db.String(200))  # School/club team
     crew_partner = db.Column(db.String(200))  # If skipper, who was crew (and vice versa)
 
+    # RAW DATA - Complete pipe-separated row text from scraper
+    # Format: "Peter Herlihy | USA 9370 | GOLD | For Sale | NBYC | 39 | 53 | 5 | 1 | 3..."
+    raw_row_data = db.Column(db.Text)  # Store complete original row for debugging
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     # Relationships

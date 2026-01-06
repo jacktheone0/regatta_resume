@@ -408,9 +408,15 @@ return result;
         """
         Parse a single row using column header mapping
         row_index is the placement (1st, 2nd, 3rd, etc.)
+
+        Returns dict with parsed fields AND raw_row_data (pipe-separated format)
         """
         try:
-            # Get sailor names from SAILORS column
+            # FIRST: Create raw pipe-separated data (like your CSV format)
+            # Format: "Peter Herlihy | USA 9370 | GOLD | For Sale | NBYC | 39 | 53 | 5 | 1 | 3..."
+            raw_row_text = " | ".join(str(cell) for cell in row_data)
+
+            # THEN: Parse specific fields
             sailor_name = None
             if 'sailors' in col_map:
                 sailor_col = row_data[col_map['sailors']]
@@ -428,7 +434,8 @@ return result;
 
             result_data = {
                 'placement': row_index,  # Row index IS the placement
-                'sailor_name': sailor_name
+                'sailor_name': sailor_name,
+                'raw_row_data': raw_row_text  # Store complete original row
             }
 
             # Get points from NET or TOTAL column
@@ -442,7 +449,7 @@ return result;
                 except ValueError:
                     pass
 
-            logger.debug(f"Parsed row {row_index}: {sailor_name} = {result_data.get('points_scored', 'N/A')} pts")
+            logger.debug(f"Parsed row {row_index}: {sailor_name} = {result_data.get('points_scored', 'N/A')} pts | Raw: {raw_row_text[:100]}...")
             return result_data
 
         except Exception as e:
@@ -507,7 +514,7 @@ return result;
             logger.debug(f"Result already exists: {sailor_name} at regatta {regatta_id}")
             return
 
-        # Create new result
+        # Create new result with RAW DATA
         result = Result(
             sailor_id=sailor.id,
             regatta_id=regatta_id,
@@ -516,7 +523,8 @@ return result;
             role=result_data.get('role'),
             points_scored=result_data.get('points_scored'),
             division=result_data.get('division'),
-            team_name=result_data.get('team_name')
+            team_name=result_data.get('team_name'),
+            raw_row_data=result_data.get('raw_row_data')  # Complete pipe-separated row
         )
 
         db.session.add(result)
