@@ -14,19 +14,37 @@
                     <h5 class="mb-0">Scraper Control</h5>
                 </div>
                 <div class="card-body">
-                    <p>Manually trigger the scraper to fetch regatta data from TheClubSpot.com</p>
+                    <p>Manually trigger scrapers to fetch regatta data</p>
 
                     <div class="alert alert-info">
-                        <strong>Note:</strong> The scraper runs automatically every Sunday at 11:59 PM UTC.
-                        Use this button to run it manually if needed.
+                        <strong>Note:</strong> The ClubSpot scraper runs automatically every Sunday at 11:59 PM UTC.
+                        Use these buttons to run scrapers manually if needed.
                     </div>
 
-                    <button id="runScraperBtn" class="btn btn-success btn-lg me-2">
-                        <i class="bi bi-play-circle"></i> Run Scraper Now
+                    <h6 class="mb-3">ClubSpot Scraper</h6>
+                    <button id="runScraperBtn" class="btn btn-success me-2 mb-3">
+                        <i class="bi bi-play-circle"></i> Run ClubSpot Scraper
                     </button>
 
-                    <button id="stopScraperBtn" class="btn btn-danger btn-lg">
+                    <button id="stopScraperBtn" class="btn btn-danger mb-3">
                         <i class="bi bi-stop-circle"></i> Stop Scraper
+                    </button>
+
+                    <hr class="my-3">
+
+                    <h6 class="mb-3">High School & College Scrapers</h6>
+                    <div class="mb-2">
+                        <label for="scraperLimit" class="form-label">Regatta Limit:</label>
+                        <input type="number" id="scraperLimit" class="form-control form-control-sm" value="50" min="1" max="500" style="width: 100px; display: inline-block;">
+                        <small class="text-muted">Max number of regattas to scrape</small>
+                    </div>
+
+                    <button id="runHSScraperBtn" class="btn btn-primary me-2 mb-2">
+                        <i class="bi bi-play-circle"></i> Run HS Scraper
+                    </button>
+
+                    <button id="runCollegeScraperBtn" class="btn btn-info mb-2">
+                        <i class="bi bi-play-circle"></i> Run College Scraper
                     </button>
 
                     <div id="scraperStatus" class="mt-3" style="display: none;">
@@ -359,6 +377,102 @@ document.getElementById('inspectBtn').addEventListener('click', async function()
     } finally {
         btn.disabled = false;
         btn.innerHTML = 'Inspect Table';
+    }
+});
+
+// HS Scraper button handler
+document.getElementById('runHSScraperBtn').addEventListener('click', async function() {
+    const btn = this;
+    const statusDiv = document.getElementById('scraperStatus');
+    const statusMsg = document.getElementById('statusMessage');
+    const limit = parseInt(document.getElementById('scraperLimit').value) || 50;
+
+    // Disable button
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting HS Scraper...';
+
+    try {
+        const response = await fetch('/api/scraper/run-hs', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ limit: limit })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            statusMsg.className = 'alert alert-success';
+            statusMsg.textContent = '✓ ' + data.message + ' - Scraping from scores.hssailing.org';
+        } else {
+            statusMsg.className = 'alert alert-danger';
+            statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
+        }
+
+        statusDiv.style.display = 'block';
+
+        // Re-enable button after 10 seconds
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-circle"></i> Run HS Scraper';
+        }, 10000);
+
+    } catch (error) {
+        statusMsg.className = 'alert alert-danger';
+        statusMsg.textContent = '✗ Error: ' + error.message;
+        statusDiv.style.display = 'block';
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-circle"></i> Run HS Scraper';
+    }
+});
+
+// College Scraper button handler
+document.getElementById('runCollegeScraperBtn').addEventListener('click', async function() {
+    const btn = this;
+    const statusDiv = document.getElementById('scraperStatus');
+    const statusMsg = document.getElementById('statusMessage');
+    const limit = parseInt(document.getElementById('scraperLimit').value) || 50;
+
+    // Disable button
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting College Scraper...';
+
+    try {
+        const response = await fetch('/api/scraper/run-college', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ limit: limit })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            statusMsg.className = 'alert alert-success';
+            statusMsg.textContent = '✓ ' + data.message + ' - Scraping from scores.collegesailing.org';
+        } else {
+            statusMsg.className = 'alert alert-danger';
+            statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
+        }
+
+        statusDiv.style.display = 'block';
+
+        // Re-enable button after 10 seconds
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-circle"></i> Run College Scraper';
+        }, 10000);
+
+    } catch (error) {
+        statusMsg.className = 'alert alert-danger';
+        statusMsg.textContent = '✗ Error: ' + error.message;
+        statusDiv.style.display = 'block';
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-circle"></i> Run College Scraper';
     }
 });
 
