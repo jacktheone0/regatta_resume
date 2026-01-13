@@ -2,8 +2,8 @@
 High School and College Sailing Scraper
 Scrapes scores.hssailing.org and scores.collegesailing.org
 
-Uses individual sailor pages to get accurate per-regatta placements.
-Extracts placement data like "21/32 (B Div)" - 21st out of 32 boats in B Division.
+Uses JavaScript extraction to get sailor names and results from individual sailor pages.
+Adapted from the ClubSpot scraper framework.
 """
 import requests
 from datetime import datetime, timezone
@@ -17,7 +17,6 @@ from selenium.webdriver.common.by import By
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from bs4 import BeautifulSoup
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -52,7 +51,7 @@ class HSCollegeScraper:
         }
         self.log_id = log_id
         self.scraped_sailors = set()  # Track sailors we've already processed
-        self.base_url = None  # Will be set in scrape_all_seasons
+        self.base_url = None
 
     def should_stop(self):
         """Check if scraper should stop"""
@@ -77,7 +76,7 @@ class HSCollegeScraper:
             seasons: list of season codes like ['s25', 'f24', 's24']
             limit: max regattas to scrape
         """
-        self.base_url = base_url  # Store for sailor URL construction
+        self.base_url = base_url
 
         log = ScraperLog(status='running')
         db.session.add(log)
@@ -154,9 +153,9 @@ class HSCollegeScraper:
                 logger.warning(f"Failed to fetch {season_url}")
                 return []
 
+            from bs4 import BeautifulSoup
             soup = BeautifulSoup(response.content, 'html.parser')
 
-            # Find all regatta links (they're usually in a list or table)
             regattas = []
 
             # Look for links that end with season code (e.g., /s25/regatta-name/)
@@ -192,11 +191,11 @@ class HSCollegeScraper:
 
     def _scrape_regatta(self, regatta_info):
         """
-        Scrape a single regatta by discovering sailors and scraping their individual pages
+        Scrape a regatta by getting sailor URLs and scraping their individual pages
 
         1. Get sailor roster from sailors page
-        2. For each sailor, visit their individual page (if not already scraped)
-        3. Extract all their regatta results from their profile
+        2. For each sailor, visit their individual page
+        3. Extract all their regatta results
         """
         regatta_url = regatta_info['url'].rstrip('/')
         sailors_url = f"{regatta_url}/sailors/"
@@ -223,7 +222,7 @@ class HSCollegeScraper:
 
             try:
                 self._scrape_sailor_profile(sailor_url)
-                time.sleep(1)  # Be nice to the server
+                time.sleep(1)
             except Exception as e:
                 logger.error(f"Error scraping sailor {sailor_url}: {e}")
                 continue
@@ -232,34 +231,33 @@ class HSCollegeScraper:
 
     def _scrape_sailor_urls(self, sailors_url):
         """
-        Scrape sailor URLs from a regatta's sailors roster page
-        Returns list of sailor profile URLs
+        Extract sailor profile URLs from regatta sailors page
+        Uses JavaScript extraction similar to ClubSpot scraper
         """
         driver = None
         try:
             driver = make_driver()
             driver.get(sailors_url)
-
             time.sleep(2)
 
-            # Extract sailor profile links
-            js = r"""
-            const sailorUrls = [];
-            const links = document.querySelectorAll('a[href*="/sailors/"]');
+            # JavaScript to extract sailor profile links
+            JS_EXTRACT_SAILORS = r"""
+const sailorUrls = [];
+const links = document.querySelectorAll('a[href*="/sailors/"]');
 
-            links.forEach(link => {
-                const href = link.getAttribute('href');
-                if (href && href.includes('/sailors/') && !href.endsWith('/sailors/')) {
-                    const fullUrl = href.startsWith('http') ? href : window.location.origin + href;
-                    sailorUrls.push(fullUrl);
-                }
-            });
+links.forEach(link => {
+    const href = link.getAttribute('href');
+    if (href && href.includes('/sailors/') && !href.endsWith('/sailors/')) {
+        const fullUrl = href.startsWith('http') ? href : window.location.origin + href;
+        sailorUrls.push(fullUrl);
+    }
+});
 
-            // Remove duplicates
-            return [...new Set(sailorUrls)];
-            """
+// Remove duplicates
+return [...new Set(sailorUrls)];
+"""
 
-            sailor_urls = driver.execute_script(js) or []
+            sailor_urls = driver.execute_script(JS_EXTRACT_SAILORS) or []
             logger.info(f"Found {len(sailor_urls)} sailor URLs at {sailors_url}")
             return sailor_urls
 
@@ -272,116 +270,85 @@ class HSCollegeScraper:
 
     def _scrape_sailor_profile(self, sailor_url):
         """
-        Scrape an individual sailor's profile page to extract all their regatta results
-
-        Individual sailor pages show chronological regatta history with:
-        - Regatta name and link
-        - Placement in format "21/32 (B Div)" - 21st out of 32 boats in B Division
-        - Role (skipper or crew)
+        Scrape an individual sailor's profile page
+        Uses HARVEST_JS style extraction to get regatta results as pipe-separated strings
         """
         driver = None
         try:
             driver = make_driver()
             driver.get(sailor_url)
-
             time.sleep(2)
 
-            # Extract sailor info and regatta results
-            js = r"""
-            const data = {
-                sailor_name: '',
-                school: '',
-                grad_year: '',
-                regattas: []
-            };
+            # JavaScript to extract sailor info and regatta results
+            # Similar to ClubSpot's HARVEST_JS - extracts data as pipe-separated strings
+            JS_HARVEST_SAILOR = r"""
+const data = {
+    sailor_name: '',
+    results: []
+};
 
-            // Get sailor name from page title or h1
-            const nameElem = document.querySelector('h1, title');
-            if (nameElem) {
-                data.sailor_name = (nameElem.innerText || nameElem.textContent || '').trim();
-            }
+// Get sailor name from h1 or title
+const nameElem = document.querySelector('h1');
+if (nameElem) {
+    data.sailor_name = (nameElem.innerText || '').trim();
+}
 
-            // Get school and grad year (usually in a summary section)
-            const summaryText = document.body.innerText;
-            const gradMatch = summaryText.match(/Class of (\d{4})/i);
-            if (gradMatch) data.grad_year = gradMatch[1];
+// Extract regatta results from tables
+const rows = document.querySelectorAll('table tbody tr, table tr');
 
-            // Extract regatta results from tables or lists
-            // Format: rows with regatta name, finish like "21/32 (B Div)", role
-            const rows = document.querySelectorAll('table tbody tr, table tr, .regatta-row');
+rows.forEach(row => {
+    const cells = Array.from(row.querySelectorAll('td, th'));
+    if (cells.length < 2) return;
 
-            rows.forEach(row => {
-                const cells = Array.from(row.querySelectorAll('td, th, div'));
-                if (cells.length < 2) return;
+    // Extract cell text as pipe-separated string (like ClubSpot scraper)
+    const cellTexts = cells.map(c => (c.innerText || '').trim());
+    const rowText = cellTexts.join(' | ');
 
-                const cellTexts = cells.map(c => (c.innerText || c.textContent || '').trim());
+    // Check if this row has a regatta link
+    const regattaLink = row.querySelector('a[href*="/s2"], a[href*="/f2"]');
+    if (regattaLink && rowText) {
+        const regattaName = regattaLink.innerText.trim();
+        const regattaUrl = regattaLink.getAttribute('href');
 
-                // Look for regatta link
-                const regattaLink = row.querySelector('a[href*="/s2"], a[href*="/f2"]');
-                if (!regattaLink) return;
+        data.results.push({
+            raw_row: rowText,
+            regatta_name: regattaName,
+            regatta_url: regattaUrl
+        });
+    }
+});
 
-                const regattaName = regattaLink.innerText.trim();
-                const regattaUrl = regattaLink.getAttribute('href');
+return data;
+"""
 
-                // Look for finish like "21/32 (B Div)" or "21/32"
-                let finish = '';
-                let division = '';
-                let role = '';
+            profile_data = driver.execute_script(JS_HARVEST_SAILOR) or {}
 
-                cellTexts.forEach(text => {
-                    // Match "21/32 (B Div)" or "21/32"
-                    const finishMatch = text.match(/(\d+)\/(\d+)\s*(\([^)]+\))?/);
-                    if (finishMatch) {
-                        finish = text;
-                        const divMatch = text.match(/\(([^)]+)\)/);
-                        if (divMatch) division = divMatch[1];
-                    }
-
-                    // Detect role
-                    if (text.toLowerCase() === 'skipper' || text.toLowerCase() === 'crew') {
-                        role = text;
-                    }
-                });
-
-                if (regattaName && finish) {
-                    data.regattas.push({
-                        name: regattaName,
-                        url: regattaUrl,
-                        finish: finish,
-                        division: division,
-                        role: role,
-                        raw_data: cellTexts.join(' | ')
-                    });
-                }
-            });
-
-            return data;
-            """
-
-            profile_data = driver.execute_script(js) or {}
-
-            if not profile_data.get('sailor_name'):
-                logger.warning(f"Could not extract sailor name from {sailor_url}")
-                return
-
-            sailor_name = profile_data['sailor_name']
+            sailor_name = profile_data.get('sailor_name', '')
             # Clean up name (remove "- Sailor Profile" etc)
             sailor_name = re.sub(r'\s*[-–]\s*Sailor.*$', '', sailor_name, flags=re.IGNORECASE).strip()
 
             if not sailor_name:
+                logger.warning(f"Could not extract sailor name from {sailor_url}")
                 return
 
             # Create sailor record
             sailor = self._get_or_create_sailor(sailor_name)
 
-            logger.info(f"Found {len(profile_data.get('regattas', []))} results for {sailor_name}")
+            results = profile_data.get('results', [])
+            logger.info(f"Found {len(results)} results for {sailor_name}")
 
-            # Save each regatta result
-            for regatta_result in profile_data.get('regattas', []):
+            # Parse each result row (similar to ClubSpot's _parse_result_row)
+            for result_raw in results:
                 try:
-                    self._save_sailor_result(sailor, regatta_result)
+                    result_data = self._parse_sailor_result_row(
+                        result_raw['raw_row'],
+                        result_raw['regatta_name'],
+                        result_raw['regatta_url']
+                    )
+                    if result_data:
+                        self._save_sailor_result(sailor, result_data)
                 except Exception as e:
-                    logger.error(f"Error saving result for {sailor_name}: {e}")
+                    logger.debug(f"Error parsing result for {sailor_name}: {e}")
                     continue
 
         except Exception as e:
@@ -390,36 +357,78 @@ class HSCollegeScraper:
             if driver:
                 driver.quit()
 
-    def _save_sailor_result(self, sailor, regatta_result):
+    def _parse_sailor_result_row(self, row_text, regatta_name, regatta_url):
         """
-        Save a single regatta result for a sailor
+        Parse a single result row to extract placement and other data
+        Similar to ClubSpot's _parse_result_row but adapted for HS/College format
 
         Args:
-            sailor: Sailor object
-            regatta_result: dict with 'name', 'url', 'finish', 'division', 'role', 'raw_data'
+            row_text: Pipe-separated row (e.g., "Fall Dinghy | 21/32 (B Div) | Skipper | MIT")
+            regatta_name: Name of regatta from link
+            regatta_url: URL to regatta page
+
+        Returns:
+            Dict with regatta info, placement, division, role, raw_data
         """
-        regatta_name = regatta_result.get('name')
-        regatta_url = regatta_result.get('url')
+        try:
+            parts = [p.strip() for p in row_text.split('|')]
 
-        if not regatta_name:
-            return
+            # Look for placement in format "21/32" or "21/32 (B Div)"
+            placement = None
+            division = None
+            role = None
 
-        # Construct full URL if needed
-        if regatta_url and not regatta_url.startswith('http'):
-            regatta_url = self.base_url + regatta_url
+            for part in parts:
+                # Match "21/32 (B Div)" or "21/32"
+                finish_match = re.search(r'(\d+)/(\d+)\s*(\([^)]+\))?', part)
+                if finish_match:
+                    placement = int(finish_match.group(1))
+                    # Extract division from "(B Div)"
+                    div_match = re.search(r'\(([^)]+)\)', part)
+                    if div_match:
+                        division = div_match.group(1)
 
-        # Extract external ID from URL (slug at end)
-        if regatta_url:
-            external_id = regatta_url.rstrip('/').split('/')[-1]
-        else:
-            # Fallback: use slugified name
-            external_id = re.sub(r'[^a-z0-9]+', '-', regatta_name.lower()).strip('-')
+                # Detect role
+                part_lower = part.lower()
+                if 'skipper' in part_lower:
+                    role = 'Skipper'
+                elif 'crew' in part_lower:
+                    role = 'Crew'
 
+            if not placement:
+                return None
+
+            # Construct full regatta URL
+            if regatta_url and not regatta_url.startswith('http'):
+                regatta_url = self.base_url + regatta_url
+
+            # Extract external ID from URL
+            if regatta_url:
+                external_id = regatta_url.rstrip('/').split('/')[-1]
+            else:
+                external_id = re.sub(r'[^a-z0-9]+', '-', regatta_name.lower()).strip('-')
+
+            return {
+                'regatta_name': regatta_name,
+                'regatta_url': regatta_url,
+                'external_id': external_id,
+                'placement': placement,
+                'division': division,
+                'role': role,
+                'raw_row_data': row_text
+            }
+
+        except Exception as e:
+            logger.debug(f"Error parsing result row: {e}")
+            return None
+
+    def _save_sailor_result(self, sailor, result_data):
+        """Save a single regatta result for a sailor"""
         # Get or create regatta
         regatta_data = {
-            'name': regatta_name,
-            'source_url': regatta_url,
-            'external_id': external_id,
+            'name': result_data['regatta_name'],
+            'source_url': result_data['regatta_url'],
+            'external_id': result_data['external_id'],
             'start_date': datetime.utcnow().date(),
         }
         regatta = self._get_or_create_regatta(regatta_data)
@@ -433,22 +442,14 @@ class HSCollegeScraper:
         if existing:
             return
 
-        # Parse placement from finish like "21/32 (B Div)"
-        finish = regatta_result.get('finish', '')
-        placement = None
-        if finish:
-            match = re.match(r'(\d+)/(\d+)', finish)
-            if match:
-                placement = int(match.group(1))  # Extract "21" from "21/32"
-
         # Create result record
         result = Result(
             sailor_id=sailor.id,
             regatta_id=regatta.id,
-            placement=placement,
-            division=regatta_result.get('division'),
-            role=regatta_result.get('role'),
-            raw_row_data=regatta_result.get('raw_data')
+            placement=result_data['placement'],
+            division=result_data.get('division'),
+            role=result_data.get('role'),
+            raw_row_data=result_data.get('raw_row_data')
         )
 
         db.session.add(result)
@@ -517,7 +518,7 @@ def run_college_scraper(limit=None, seasons=None):
 
     Args:
         limit: Max regattas to scrape
-        seasons: List like ['s25', 'f24'] (default: current season)
+        seasons: List like ['s26', 'f25'] (default: current season)
     """
     scraper = HSCollegeScraper()
     if not seasons:
