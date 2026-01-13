@@ -65,6 +65,8 @@ class ClubspotScraper:
             return False
 
         try:
+            # Refresh the session to get latest status from database
+            db.session.expire_all()
             log = ScraperLog.query.get(self.log_id)
             if log and log.status == 'cancelled':
                 logger.info("Stop requested by user, cancelling scraper...")
@@ -94,10 +96,19 @@ class ClubspotScraper:
             'clubObject': {'$nin': ['HCyTbbCF4n', 'XVgOrNASDY', 'ecNpKgrusD', 'GTKaJKeque', 'TTBnsppUug', 'pnBFlwJ2Mf']},
         }
 
-        # Add year filter if provided
+        # Add date range filter: from start_year to NOW (exclude future regattas)
+        today_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
         if start_year:
             start_date = f"{start_year}-01-01T00:00:00.000Z"
-            where_clause['startDate'] = {'$gte': {'__type': 'Date', 'iso': start_date}}
+            # Only get regattas between start_year and today
+            where_clause['startDate'] = {
+                '$gte': {'__type': 'Date', 'iso': start_date},
+                '$lte': {'__type': 'Date', 'iso': today_iso}
+            }
+        else:
+            # No start year specified, just exclude future regattas
+            where_clause['startDate'] = {'$lte': {'__type': 'Date', 'iso': today_iso}}
 
         data = {
             'where': where_clause,
