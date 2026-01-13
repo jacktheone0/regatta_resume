@@ -406,6 +406,58 @@ def api_inspect_regatta():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/scraper/run-hs', methods=['POST'])
+@login_required
+def api_run_hs_scraper():
+    """Run High School sailing scraper"""
+    try:
+        data = request.get_json() or {}
+        limit = data.get('limit', 50)  # Default to 50 regattas for testing
+
+        from threading import Thread
+        from scraper_hscollege import run_hs_scraper
+
+        def run_with_context():
+            with app.app_context():
+                run_hs_scraper(limit=limit)
+
+        thread = Thread(target=run_with_context)
+        thread.start()
+
+        return jsonify({
+            'success': True,
+            'message': f'HS scraper started (limit: {limit} regattas)'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/scraper/run-college', methods=['POST'])
+@login_required
+def api_run_college_scraper():
+    """Run College sailing scraper"""
+    try:
+        data = request.get_json() or {}
+        limit = data.get('limit', 50)  # Default to 50 regattas
+
+        from threading import Thread
+        from scraper_hscollege import run_college_scraper
+
+        def run_with_context():
+            with app.app_context():
+                run_college_scraper(limit=limit)
+
+        thread = Thread(target=run_with_context)
+        thread.start()
+
+        return jsonify({
+            'success': True,
+            'message': f'College scraper started (limit: {limit} regattas)'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 # ============================================================================
 # AUTHENTICATION ROUTES
 # ============================================================================
