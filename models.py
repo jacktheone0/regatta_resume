@@ -101,7 +101,7 @@ class Regatta(db.Model):
 
 
 class Result(db.Model):
-    """Individual sailor results at regattas"""
+    """Individual sailor results at regattas (ClubSpot data)"""
     __tablename__ = 'results'
 
     id = db.Column(db.Integer, primary_key=True)
@@ -119,6 +119,9 @@ class Result(db.Model):
     team_name = db.Column(db.String(200))  # School/club team
     crew_partner = db.Column(db.String(200))  # If skipper, who was crew (and vice versa)
 
+    # RAW DATA - Complete pipe-separated row text from scraper
+    raw_row_data = db.Column(db.Text)
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     # Relationships
@@ -132,6 +135,114 @@ class Result(db.Model):
 
     def __repr__(self):
         return f'<Result {self.sailor.name} - {self.regatta.name}: {self.placement}>'
+
+
+class SailorName(db.Model):
+    """All sailor names from HS/College scrapers with account claiming status"""
+    __tablename__ = 'sailor_names'
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False, index=True)
+    name_normalized = db.Column(db.String(200), unique=True, nullable=False, index=True)
+
+    # Account claiming
+    is_claimed = db.Column(db.Boolean, default=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    claimed_at = db.Column(db.DateTime)
+
+    # Metadata
+    school = db.Column(db.String(200))  # School affiliation if available
+    graduation_year = db.Column(db.Integer)
+    source = db.Column(db.String(20))  # 'hs', 'college', or 'both'
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    user = db.relationship('User', backref='claimed_sailor_names')
+    hs_results = db.relationship('HSResult', back_populates='sailor_name', cascade='all, delete-orphan')
+    college_results = db.relationship('CollegeResult', back_populates='sailor_name', cascade='all, delete-orphan')
+
+    def __repr__(self):
+        return f'<SailorName {self.name}>'
+
+
+class HSResult(db.Model):
+    """High School sailing results"""
+    __tablename__ = 'hs_results'
+
+    id = db.Column(db.Integer, primary_key=True)
+    sailor_name_id = db.Column(db.Integer, db.ForeignKey('sailor_names.id'), nullable=False, index=True)
+
+    # Sailor info
+    sailor_name = db.relationship('SailorName', back_populates='hs_results')
+
+    # Regatta info
+    regatta_name = db.Column(db.String(300), nullable=False, index=True)
+    regatta_link = db.Column(db.String(500))
+    regatta_date = db.Column(db.Date, index=True)
+
+    # Result details
+    place = db.Column(db.String(50))  # "21/32" format (place finished/total sailors)
+    place_numeric = db.Column(db.Integer)  # Just the 21 for sorting
+    total_boats = db.Column(db.Integer)  # Total boats in race
+    position = db.Column(db.String(20))  # "Skipper" or "Crew"
+    division = db.Column(db.String(50))  # "A Div", "B Div", etc.
+
+    # School/Team
+    school = db.Column(db.String(200))
+
+    # Raw data
+    raw_row_data = db.Column(db.Text)  # Pipe-separated original row
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Unique constraint
+    __table_args__ = (
+        db.Index('idx_hs_sailor_regatta', 'sailor_name_id', 'regatta_name'),
+    )
+
+    def __repr__(self):
+        return f'<HSResult {self.sailor_name.name if self.sailor_name else "?"} - {self.regatta_name}>'
+
+
+class CollegeResult(db.Model):
+    """College sailing results"""
+    __tablename__ = 'college_results'
+
+    id = db.Column(db.Integer, primary_key=True)
+    sailor_name_id = db.Column(db.Integer, db.ForeignKey('sailor_names.id'), nullable=False, index=True)
+
+    # Sailor info
+    sailor_name = db.relationship('SailorName', back_populates='college_results')
+
+    # Regatta info
+    regatta_name = db.Column(db.String(300), nullable=False, index=True)
+    regatta_link = db.Column(db.String(500))
+    regatta_date = db.Column(db.Date, index=True)
+
+    # Result details
+    place = db.Column(db.String(50))  # "21/32" format (place finished/total sailors)
+    place_numeric = db.Column(db.Integer)  # Just the 21 for sorting
+    total_boats = db.Column(db.Integer)  # Total boats in race
+    position = db.Column(db.String(20))  # "Skipper" or "Crew"
+    division = db.Column(db.String(50))  # "A Div", "B Div", etc.
+
+    # School/Team
+    school = db.Column(db.String(200))
+
+    # Raw data
+    raw_row_data = db.Column(db.Text)  # Pipe-separated original row
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Unique constraint
+    __table_args__ = (
+        db.Index('idx_college_sailor_regatta', 'sailor_name_id', 'regatta_name'),
+    )
+
+    def __repr__(self):
+        return f'<CollegeResult {self.sailor_name.name if self.sailor_name else "?"} - {self.regatta_name}>'
 
 
 class ResumeLink(db.Model):

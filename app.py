@@ -3,7 +3,7 @@ from flask_login import LoginManager, login_user, logout_user, login_required, c
 from flask_migrate import Migrate
 from apscheduler.schedulers.background import BackgroundScheduler
 from config import config
-from models import db, User, Sailor, Regatta, Result, ResumeLink
+from models import db, User, Sailor, Regatta, Result, ResumeLink, SailorName, HSResult, CollegeResult
 from forms import LoginForm, RegisterForm, ClaimProfileForm
 from scraper import run_scraper
 from utils import generate_pdf, calculate_stats, get_performance_trends
@@ -384,6 +384,74 @@ def api_stop_scraper():
                 'message': 'No scraper currently running'
             }), 404
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/scraper/run-hs-schools', methods=['POST'])
+@login_required
+def api_run_hs_schools_scraper():
+    """
+    Run High School sailing scraper (schools-based approach)
+    Scrapes all schools to get sailor names, then scrapes results for each
+    """
+    try:
+        data = request.get_json() or {}
+        limit_schools = data.get('limit_schools', 5)  # Default: 5 schools for testing
+        limit_sailors = data.get('limit_sailors', 50)  # Default: 50 sailors
+
+        from threading import Thread
+        from scraper_schools import run_full_hs_scraper
+
+        def run_with_context():
+            with app.app_context():
+                run_full_hs_scraper(
+                    limit_schools=limit_schools,
+                    limit_sailors=limit_sailors
+                )
+
+        thread = Thread(target=run_with_context)
+        thread.start()
+
+        return jsonify({
+            'success': True,
+            'message': f'HS Schools scraper started (max {limit_schools} schools, {limit_sailors} sailors)'
+        })
+    except Exception as e:
+        app.logger.error(f"HS Schools scraper error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/scraper/run-college-schools', methods=['POST'])
+@login_required
+def api_run_college_schools_scraper():
+    """
+    Run College sailing scraper (schools-based approach)
+    Scrapes all schools to get sailor names, then scrapes results for each
+    """
+    try:
+        data = request.get_json() or {}
+        limit_schools = data.get('limit_schools', 5)  # Default: 5 schools for testing
+        limit_sailors = data.get('limit_sailors', 50)  # Default: 50 sailors
+
+        from threading import Thread
+        from scraper_schools import run_full_college_scraper
+
+        def run_with_context():
+            with app.app_context():
+                run_full_college_scraper(
+                    limit_schools=limit_schools,
+                    limit_sailors=limit_sailors
+                )
+
+        thread = Thread(target=run_with_context)
+        thread.start()
+
+        return jsonify({
+            'success': True,
+            'message': f'College Schools scraper started (max {limit_schools} schools, {limit_sailors} sailors)'
+        })
+    except Exception as e:
+        app.logger.error(f"College Schools scraper error: {e}")
         return jsonify({'error': str(e)}), 500
 
 
