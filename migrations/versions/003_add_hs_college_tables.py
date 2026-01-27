@@ -1,7 +1,7 @@
 """Add HS/College tables and sailor names
 
-Revision ID: 003
-Revises: 002
+Revision ID: 003_add_hs_college_tables
+Revises: 002_add_raw_data
 Create Date: 2026-01-27
 
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '003'
-down_revision = '002'
+revision = '003_add_hs_college_tables'
+down_revision = '002_add_raw_data'
 branch_labels = None
 depends_on = None
 
