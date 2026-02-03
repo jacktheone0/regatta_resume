@@ -242,8 +242,9 @@ searchInput.addEventListener('input', function() {
                     searchResults.innerHTML = '<div class="search-result-item">No sailors found</div>';
                 } else {
                     searchResults.innerHTML = sailors.map(sailor => `
-                        <a href="/sailor/${sailor.id}" class="search-result-item">
+                        <a href="${sailor.url}" class="search-result-item">
                             <strong>${sailor.name}</strong>
+                            ${sailor.source && sailor.source !== 'clubspot' ? `<span class="badge bg-primary ms-2">${sailor.source}</span>` : ''}
                             ${sailor.home_club ? `<br><small class="text-muted">${sailor.home_club}</small>` : ''}
                             <br><small>${sailor.total_regattas} regattas${sailor.best_finish ? ` | Best: ${sailor.best_finish}` : ''}</small>
                         </a>

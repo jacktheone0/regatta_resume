@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{{ sailor.name }} - RegattaResume{% endblock %}
+{% block title %}{{ sailor_name.name }} - RegattaResume{% endblock %}
 
 {% block content %}
 <div class="container my-5">
@@ -8,23 +8,23 @@
     <div class="profile-header mb-4">
         <div class="row align-items-center">
             <div class="col-md-8">
-                <h1 class="mb-2">{{ sailor.name }}</h1>
-                {% if sailor.home_club %}
-                    <p class="text-muted lead mb-0">{{ sailor.home_club }}</p>
+                <h1 class="mb-2">{{ sailor_name.name }}</h1>
+                {% if sailor_name.school %}
+                    <p class="text-muted lead mb-0">{{ sailor_name.school }}</p>
                 {% endif %}
-                {% if sailor.bio %}
-                    <p class="mt-3">{{ sailor.bio }}</p>
-                {% endif %}
+                <p class="mt-2">
+                    <span class="badge bg-primary">{{ sailor_name.source.upper() if sailor_name.source != 'both' else 'HS/College' }}</span>
+                    {% if sailor_name.is_claimed %}
+                        <span class="badge bg-success">Claimed Profile</span>
+                    {% endif %}
+                </p>
             </div>
             <div class="col-md-4 text-md-end">
-                {% if is_owner %}
-                    <a href="{{ url_for('resume_builder', sailor_id=sailor.id) }}" class="btn btn-primary">
-                        Build Resume
+                {% if not sailor_name.is_claimed %}
+                    <a href="{{ url_for('claim_profile') }}" class="btn btn-primary">
+                        Claim This Profile
                     </a>
                 {% endif %}
-                <a href="{{ url_for('coach_view', sailor_id=sailor.id) }}" class="btn btn-outline-primary">
-                    Coach View
-                </a>
             </div>
         </div>
     </div>
@@ -57,93 +57,28 @@
         </div>
     </div>
 
-    <!-- Quick Facts -->
+    <!-- Source Breakdown -->
     <div class="row mb-4">
         <div class="col-md-12">
             <div class="card">
                 <div class="card-body">
-                    <h5 class="card-title mb-3">Quick Facts</h5>
+                    <h5 class="card-title mb-3">Results Breakdown</h5>
                     <div class="row">
-                        {% if stats.most_sailed_fleet %}
                         <div class="col-md-3 mb-2">
-                            <strong>Primary Fleet:</strong> {{ stats.most_sailed_fleet }}
+                            <strong>High School:</strong> {{ stats.hs_count }} results
                         </div>
-                        {% endif %}
-                        {% if stats.years_active %}
                         <div class="col-md-3 mb-2">
-                            <strong>Years Active:</strong> {{ stats.years_active }}
+                            <strong>College:</strong> {{ stats.college_count }} results
                         </div>
-                        {% endif %}
                         <div class="col-md-3 mb-2">
                             <strong>Top 10 Finishes:</strong> {{ stats.top_10_count }}
                         </div>
                         <div class="col-md-3 mb-2">
-                            <strong>Recent Activity:</strong> {{ stats.recent_regattas }} in last 6mo
+                            <strong>Total:</strong> {{ stats.total_regattas }} regattas
                         </div>
                     </div>
                 </div>
             </div>
-        </div>
-    </div>
-
-    <!-- ClubSpot Results Table -->
-    <div class="card mb-4">
-        <div class="card-header bg-white">
-            <h5 class="mb-0">ClubSpot Regatta Results</h5>
-        </div>
-        <div class="card-body">
-            {% if results %}
-                <div class="table-responsive">
-                    <table class="table table-hover">
-                        <thead>
-                            <tr>
-                                <th>Date</th>
-                                <th>Regatta</th>
-                                <th>Location</th>
-                                <th>Placement</th>
-                                <th>Fleet</th>
-                                <th>Role</th>
-                                <th>Points</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for result, regatta in results %}
-                            <tr class="{% if result.placement <= 3 %}table-warning{% endif %}">
-                                <td>{{ regatta.start_date.strftime('%b %d, %Y') }}</td>
-                                <td>
-                                    <strong>{{ regatta.name }}</strong>
-                                    {% if result.division %}
-                                        <br><small class="text-muted">{{ result.division }}</small>
-                                    {% endif %}
-                                </td>
-                                <td>{{ regatta.location or 'N/A' }}</td>
-                                <td>
-                                    <span class="badge
-                                        {% if result.placement == 1 %}bg-warning text-dark
-                                        {% elif result.placement == 2 %}bg-secondary
-                                        {% elif result.placement == 3 %}bg-info
-                                        {% else %}bg-light text-dark
-                                        {% endif %}">
-                                        {{ result.placement }}
-                                    </span>
-                                </td>
-                                <td>{{ result.boat_type or regatta.fleet_type or 'N/A' }}</td>
-                                <td>
-                                    {% if result.role %}
-                                        {{ result.role.capitalize() }}
-                                    {% else %}
-                                        N/A
-                                    {% endif %}
-                                </td>
-                                <td>{{ result.points_scored or 'N/A' }}</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            {% else %}
-                <p class="text-muted">No ClubSpot results found for this sailor.</p>
-            {% endif %}
         </div>
     </div>
 
@@ -247,6 +182,14 @@
                     </tbody>
                 </table>
             </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if not hs_results and not college_results %}
+    <div class="card">
+        <div class="card-body">
+            <p class="text-muted text-center">No results found for this sailor yet.</p>
         </div>
     </div>
     {% endif %}

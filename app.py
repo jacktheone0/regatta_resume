@@ -81,24 +81,63 @@ def index():
 
 @app.route('/search')
 def search():
-    """Search for sailors"""
+    """Search for sailors - searches both Sailor and SailorName tables"""
     query = request.args.get('q', '').strip()
 
     if not query:
         return jsonify([])
 
-    # Search by name (case-insensitive)
+    results = []
+
+    # Search in Sailor table (ClubSpot data)
     sailors = Sailor.query.filter(
         Sailor.name_normalized.contains(query.lower())
-    ).limit(20).all()
+    ).limit(10).all()
 
-    results = [{
-        'id': s.id,
-        'name': s.name,
-        'home_club': s.home_club,
-        'total_regattas': s.total_regattas,
-        'best_finish': s.best_finish
-    } for s in sailors]
+    for s in sailors:
+        results.append({
+            'id': s.id,
+            'name': s.name,
+            'home_club': s.home_club,
+            'total_regattas': s.total_regattas,
+            'best_finish': s.best_finish,
+            'source': 'clubspot',
+            'url': f'/sailor/{s.id}'
+        })
+
+    # Search in SailorName table (HS/College data)
+    sailor_names = SailorName.query.filter(
+        SailorName.name_normalized.contains(query.lower())
+    ).limit(10).all()
+
+    for sn in sailor_names:
+        # Count total results
+        hs_count = HSResult.query.filter_by(sailor_name_id=sn.id).count()
+        college_count = CollegeResult.query.filter_by(sailor_name_id=sn.id).count()
+        total_results = hs_count + college_count
+
+        # Get best finish
+        best_hs = db.session.query(db.func.min(HSResult.place_numeric)).filter_by(sailor_name_id=sn.id).scalar()
+        best_college = db.session.query(db.func.min(CollegeResult.place_numeric)).filter_by(sailor_name_id=sn.id).scalar()
+        best_finish = None
+        if best_hs and best_college:
+            best_finish = min(best_hs, best_college)
+        elif best_hs:
+            best_finish = best_hs
+        elif best_college:
+            best_finish = best_college
+
+        source_label = sn.source.upper() if sn.source != 'both' else 'HS/College'
+
+        results.append({
+            'id': sn.id,
+            'name': sn.name,
+            'home_club': sn.school,
+            'total_regattas': total_results,
+            'best_finish': best_finish,
+            'source': source_label,
+            'url': f'/sailor-name/{sn.id}'
+        })
 
     return jsonify(results)
 
@@ -123,9 +162,86 @@ def sailor_profile(sailor_id):
     # Check if current user owns this profile
     is_owner = current_user.is_authenticated and current_user.sailor_id == sailor_id
 
+    # Also check for HS/College results by matching sailor name
+    sailor_name_match = SailorName.query.filter_by(
+        name_normalized=sailor.name_normalized
+    ).first()
+
+    hs_results = []
+    college_results = []
+    if sailor_name_match:
+        hs_results = HSResult.query.filter_by(
+            sailor_name_id=sailor_name_match.id
+        ).order_by(desc(HSResult.regatta_date)).all()
+
+        college_results = CollegeResult.query.filter_by(
+            sailor_name_id=sailor_name_match.id
+        ).order_by(desc(CollegeResult.regatta_date)).all()
+
     return render_template('sailor_profile.html',
                          sailor=sailor,
                          results=results,
+                         stats=stats,
+                         is_owner=is_owner,
+                         hs_results=hs_results,
+                         college_results=college_results)
+
+
+@app.route('/sailor-name/<int:sailor_name_id>')
+def sailor_name_profile(sailor_name_id):
+    """Profile page for HS/College sailors from SailorName table"""
+    sailor_name = SailorName.query.get_or_404(sailor_name_id)
+
+    # Get HS results
+    hs_results = HSResult.query.filter_by(
+        sailor_name_id=sailor_name_id
+    ).order_by(desc(HSResult.regatta_date)).all()
+
+    # Get College results
+    college_results = CollegeResult.query.filter_by(
+        sailor_name_id=sailor_name_id
+    ).order_by(desc(CollegeResult.regatta_date)).all()
+
+    # Calculate basic stats
+    total_results = len(hs_results) + len(college_results)
+
+    best_finish = None
+    if hs_results or college_results:
+        all_placements = [r.place_numeric for r in hs_results if r.place_numeric] + \
+                        [r.place_numeric for r in college_results if r.place_numeric]
+        if all_placements:
+            best_finish = min(all_placements)
+
+    avg_placement = None
+    if hs_results or college_results:
+        all_placements = [r.place_numeric for r in hs_results if r.place_numeric] + \
+                        [r.place_numeric for r in college_results if r.place_numeric]
+        if all_placements:
+            avg_placement = round(sum(all_placements) / len(all_placements), 1)
+
+    top_3_count = len([r for r in hs_results if r.place_numeric and r.place_numeric <= 3]) + \
+                  len([r for r in college_results if r.place_numeric and r.place_numeric <= 3])
+
+    top_10_count = len([r for r in hs_results if r.place_numeric and r.place_numeric <= 10]) + \
+                   len([r for r in college_results if r.place_numeric and r.place_numeric <= 10])
+
+    stats = {
+        'total_regattas': total_results,
+        'best_finish': best_finish,
+        'average_placement': avg_placement,
+        'top_3_count': top_3_count,
+        'top_10_count': top_10_count,
+        'hs_count': len(hs_results),
+        'college_count': len(college_results)
+    }
+
+    # Check if user owns this (if they have claimed it)
+    is_owner = current_user.is_authenticated and sailor_name.user_id == current_user.id
+
+    return render_template('sailor_name_profile.html',
+                         sailor_name=sailor_name,
+                         hs_results=hs_results,
+                         college_results=college_results,
                          stats=stats,
                          is_owner=is_owner)
 
