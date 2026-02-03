@@ -128,12 +128,7 @@ def scrape_batch_sailors(sailors_df: pd.DataFrame, delay: float = 0.5, save_inte
             else:
                 print(f"- [{idx+1}/{total_sailors}] {sailor_name}: No results found")
 
-            # Save progress periodically
-            if (idx + 1) % save_interval == 0:
-                progress_df = pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
-                progress_file = f"results_progress_{idx+1}.csv"
-                progress_df.to_csv(progress_file, index=False)
-                print(f"  → Progress saved to {progress_file}")
+           
 
         except Exception as e:
             print(f"✗ [{idx+1}/{total_sailors}] {sailor_name}: Error - {e}")
