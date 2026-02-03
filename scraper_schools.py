@@ -47,27 +47,45 @@ def store_schools_in_db(schools_df: pd.DataFrame, source_type: str):
 
 
 def store_sailors_in_db(rosters_df: pd.DataFrame, source_type: str):
-    """Store sailor names from DataFrame into database"""
+    """Store sailor names from DataFrame into database - optimized with batching"""
     sailors_added = 0
+    sailors_updated = 0
+    batch_size = 1000
+    total_rows = len(rosters_df)
 
+    logger.info(f"Processing {total_rows} sailor records...")
+
+    # Get all existing sailor names in one query (much faster than N queries)
+    all_normalized_names = [row['Sailor_Name'].lower().strip() for _, row in rosters_df.iterrows()]
+    existing_sailors = SailorName.query.filter(
+        SailorName.name_normalized.in_(all_normalized_names)
+    ).all()
+
+    # Create lookup dict for fast access
+    existing_dict = {s.name_normalized: s for s in existing_sailors}
+    logger.info(f"Found {len(existing_dict)} existing sailors in database")
+
+    # Process in batches
     for idx, row in rosters_df.iterrows():
         sailor_name = row['Sailor_Name']
         school = row.get('School', '')
         name_normalized = sailor_name.lower().strip()
 
-        # Check if already exists
-        sailor = SailorName.query.filter_by(name_normalized=name_normalized).first()
+        if name_normalized in existing_dict:
+            # Update existing sailor
+            sailor = existing_dict[name_normalized]
 
-        if sailor:
-            # Update source if needed
             if sailor.source != 'both':
                 if (sailor.source == 'hs' and source_type == 'college') or \
                    (sailor.source == 'college' and source_type == 'hs'):
                     sailor.source = 'both'
+                    sailors_updated += 1
 
             if not sailor.school:
                 sailor.school = school
+                sailors_updated += 1
         else:
+            # Create new sailor
             sailor = SailorName(
                 name=sailor_name.strip(),
                 name_normalized=name_normalized,
@@ -75,10 +93,17 @@ def store_sailors_in_db(rosters_df: pd.DataFrame, source_type: str):
                 source=source_type
             )
             db.session.add(sailor)
+            existing_dict[name_normalized] = sailor
             sailors_added += 1
 
+        # Commit in batches to avoid memory issues
+        if (idx + 1) % batch_size == 0:
+            db.session.commit()
+            logger.info(f"Progress: {idx + 1}/{total_rows} ({(idx+1)/total_rows*100:.1f}%) - Added {sailors_added}, Updated {sailors_updated}")
+
+    # Final commit
     db.session.commit()
-    logger.info(f"Stored {sailors_added} new sailor names in database")
+    logger.info(f"✓ Stored {sailors_added} new sailors, updated {sailors_updated} existing sailors")
 
 
 def store_results_in_db(results_df: pd.DataFrame, source_type: str):
