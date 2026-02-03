@@ -153,35 +153,50 @@ class SchoolsScraper:
 
     def _store_sailor_name(self, name, school, source_type):
         """Store sailor name in SailorName table"""
-        name_normalized = name.lower().strip()
+        return _store_sailor_name(name, school, source_type)
 
-        # Check if already exists
-        sailor = SailorName.query.filter_by(name_normalized=name_normalized).first()
 
-        if sailor:
-            # Update source if needed
-            if sailor.source != 'both':
-                if (sailor.source == 'hs' and source_type == 'college') or \
-                   (sailor.source == 'college' and source_type == 'hs'):
-                    sailor.source = 'both'
+def _store_sailor_name(name, school, source_type):
+    """
+    Store sailor name in SailorName table
 
-            # Update school if not set
-            if not sailor.school:
-                sailor.school = school
+    Args:
+        name: Sailor's full name
+        school: School name
+        source_type: 'hs', 'college', or 'both'
 
-            db.session.commit()
-        else:
-            # Create new sailor name record
-            sailor = SailorName(
-                name=name.strip(),
-                name_normalized=name_normalized,
-                school=school,
-                source=source_type
-            )
-            db.session.add(sailor)
-            db.session.commit()
+    Returns:
+        SailorName object
+    """
+    name_normalized = name.lower().strip()
 
-        return sailor
+    # Check if already exists
+    sailor = SailorName.query.filter_by(name_normalized=name_normalized).first()
+
+    if sailor:
+        # Update source if needed
+        if sailor.source != 'both':
+            if (sailor.source == 'hs' and source_type == 'college') or \
+               (sailor.source == 'college' and source_type == 'hs'):
+                sailor.source = 'both'
+
+        # Update school if not set
+        if not sailor.school:
+            sailor.school = school
+
+        db.session.commit()
+    else:
+        # Create new sailor name record
+        sailor = SailorName(
+            name=name.strip(),
+            name_normalized=name_normalized,
+            school=school,
+            source=source_type
+        )
+        db.session.add(sailor)
+        db.session.commit()
+
+    return sailor
 
 
 def build_sailor_url(sailor_name: str, base_url: str) -> str:
@@ -349,27 +364,53 @@ def scrape_sailor_results(sailor_name, source_type='hs'):
 
 def run_full_hs_scraper(limit_schools=None, limit_sailors=None):
     """
-    Full HS scraper: Get all schools -> Get all sailors -> Scrape all results
+    Full HS scraper using proven 3-step approach:
+    Step 1: Get all schools
+    Step 2: Get all rosters (school + season combinations)
+    Step 3: Scrape individual sailor results
 
     Args:
         limit_schools: Max schools to scrape (None = all)
         limit_sailors: Max sailors to scrape results for (None = all)
     """
     from app import app
+    from schools_scraper_core import scrape_schools, scrape_all_rosters
 
     with app.app_context():
-        scraper = SchoolsScraper()
+        base_url = 'https://scores.hssailing.org'
 
-        # Step 1: Scrape all schools to get sailor names
-        logger.info("=== STEP 1: Scraping schools for sailor names ===")
-        scraper.scrape_all_schools(
-            'https://scores.hssailing.org',
-            source_type='hs',
-            limit_schools=limit_schools
-        )
+        # Step 1: Scrape all schools
+        logger.info("=== STEP 1: Scraping schools ===")
+        schools = scrape_schools(base_url)
 
-        # Step 2: Scrape results for each sailor
-        logger.info("=== STEP 2: Scraping results for each sailor ===")
+        if limit_schools:
+            schools = schools[:limit_schools]
+            logger.info(f"Limited to {limit_schools} schools")
+
+        logger.info(f"Found {len(schools)} schools")
+
+        # Step 2: Scrape all rosters to get sailor names
+        logger.info("=== STEP 2: Scraping rosters for all schools ===")
+        seasons = ["f25", "s25", "f24", "s24", "f23", "s23", "f22", "s22"]
+        all_sailors = scrape_all_rosters(base_url, schools, seasons)
+
+        logger.info(f"Found {len(all_sailors)} total sailor records from rosters")
+
+        # Store sailors in database
+        logger.info("Storing sailor names in database...")
+        sailors_added = 0
+        for sailor_data in all_sailors:
+            sailor = _store_sailor_name(
+                sailor_data['sailor_name'],
+                sailor_data['school'],
+                'hs'
+            )
+            sailors_added += 1
+
+        logger.info(f"Stored {sailors_added} sailor names")
+
+        # Step 3: Scrape results for each sailor
+        logger.info("=== STEP 3: Scraping individual results for each sailor ===")
 
         hs_sailors = SailorName.query.filter(
             SailorName.source.in_(['hs', 'both'])
@@ -392,27 +433,53 @@ def run_full_hs_scraper(limit_schools=None, limit_sailors=None):
 
 def run_full_college_scraper(limit_schools=None, limit_sailors=None):
     """
-    Full College scraper: Get all schools -> Get all sailors -> Scrape all results
+    Full College scraper using proven 3-step approach:
+    Step 1: Get all schools
+    Step 2: Get all rosters (school + season combinations)
+    Step 3: Scrape individual sailor results
 
     Args:
         limit_schools: Max schools to scrape (None = all)
         limit_sailors: Max sailors to scrape results for (None = all)
     """
     from app import app
+    from schools_scraper_core import scrape_schools, scrape_all_rosters
 
     with app.app_context():
-        scraper = SchoolsScraper()
+        base_url = 'https://scores.collegesailing.org'
 
-        # Step 1: Scrape all schools to get sailor names
-        logger.info("=== STEP 1: Scraping schools for sailor names ===")
-        scraper.scrape_all_schools(
-            'https://scores.collegesailing.org',
-            source_type='college',
-            limit_schools=limit_schools
-        )
+        # Step 1: Scrape all schools
+        logger.info("=== STEP 1: Scraping schools ===")
+        schools = scrape_schools(base_url)
 
-        # Step 2: Scrape results for each sailor
-        logger.info("=== STEP 2: Scraping results for each sailor ===")
+        if limit_schools:
+            schools = schools[:limit_schools]
+            logger.info(f"Limited to {limit_schools} schools")
+
+        logger.info(f"Found {len(schools)} schools")
+
+        # Step 2: Scrape all rosters to get sailor names
+        logger.info("=== STEP 2: Scraping rosters for all schools ===")
+        seasons = ["f25", "s25", "f24", "s24", "f23", "s23", "f22", "s22"]
+        all_sailors = scrape_all_rosters(base_url, schools, seasons)
+
+        logger.info(f"Found {len(all_sailors)} total sailor records from rosters")
+
+        # Store sailors in database
+        logger.info("Storing sailor names in database...")
+        sailors_added = 0
+        for sailor_data in all_sailors:
+            sailor = _store_sailor_name(
+                sailor_data['sailor_name'],
+                sailor_data['school'],
+                'college'
+            )
+            sailors_added += 1
+
+        logger.info(f"Stored {sailors_added} sailor names")
+
+        # Step 3: Scrape results for each sailor
+        logger.info("=== STEP 3: Scraping individual results for each sailor ===")
 
         college_sailors = SailorName.query.filter(
             SailorName.source.in_(['college', 'both'])
