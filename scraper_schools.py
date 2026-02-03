@@ -9,7 +9,7 @@ import pandas as pd
 from datetime import datetime
 import time
 import logging
-from models import db, SailorName, HSResult, CollegeResult
+from models import db, SailorName, HSResult, CollegeResult, School
 import re
 
 logging.basicConfig(level=logging.INFO)
@@ -154,6 +154,44 @@ class SchoolsScraper:
     def _store_sailor_name(self, name, school, source_type):
         """Store sailor name in SailorName table"""
         return _store_sailor_name(name, school, source_type)
+
+
+def _store_school(school_data, source_type):
+    """
+    Store school in School table
+
+    Args:
+        school_data: Dictionary with keys: school_name, district, url_slug, full_url
+        source_type: 'hs' or 'college'
+
+    Returns:
+        School object
+    """
+    # Check if already exists
+    school = School.query.filter_by(
+        url_slug=school_data['url_slug'],
+        source=source_type
+    ).first()
+
+    if school:
+        # Update district if not set
+        if not school.district and school_data.get('district'):
+            school.district = school_data['district']
+        school.updated_at = datetime.utcnow()
+        db.session.commit()
+    else:
+        # Create new school record
+        school = School(
+            name=school_data['school_name'],
+            district=school_data.get('district', ''),
+            source=source_type,
+            url_slug=school_data['url_slug'],
+            full_url=school_data.get('full_url', '')
+        )
+        db.session.add(school)
+        db.session.commit()
+
+    return school
 
 
 def _store_sailor_name(name, school, source_type):
@@ -389,6 +427,17 @@ def run_full_hs_scraper(limit_schools=None, limit_sailors=None):
 
         logger.info(f"Found {len(schools)} schools")
 
+        # Store schools in database
+        logger.info("Storing schools in database...")
+        for school_data in schools:
+            _store_school({
+                'school_name': school_data['school_name'],
+                'district': school_data.get('district', ''),
+                'url_slug': school_data['url_slug'],
+                'full_url': school_data.get('full_url', '')
+            }, 'hs')
+        logger.info(f"Stored {len(schools)} schools")
+
         # Step 2: Scrape all rosters to get sailor names
         logger.info("=== STEP 2: Scraping rosters for all schools ===")
         seasons = ["f25", "s25", "f24", "s24", "f23", "s23", "f22", "s22"]
@@ -457,6 +506,17 @@ def run_full_college_scraper(limit_schools=None, limit_sailors=None):
             logger.info(f"Limited to {limit_schools} schools")
 
         logger.info(f"Found {len(schools)} schools")
+
+        # Store schools in database
+        logger.info("Storing schools in database...")
+        for school_data in schools:
+            _store_school({
+                'school_name': school_data['school_name'],
+                'district': school_data.get('district', ''),
+                'url_slug': school_data['url_slug'],
+                'full_url': school_data.get('full_url', '')
+            }, 'college')
+        logger.info(f"Stored {len(schools)} schools")
 
         # Step 2: Scrape all rosters to get sailor names
         logger.info("=== STEP 2: Scraping rosters for all schools ===")

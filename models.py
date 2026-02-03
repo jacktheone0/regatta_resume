@@ -291,3 +291,32 @@ class ScraperLog(db.Model):
 
     def __repr__(self):
         return f'<ScraperLog {self.started_at} - {self.status}>'
+
+
+class School(db.Model):
+    """Schools from HS/College scrapers"""
+    __tablename__ = 'schools'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    # School identification
+    name = db.Column(db.String(300), nullable=False, index=True)
+    district = db.Column(db.String(200))  # Geographic district/conference
+    source = db.Column(db.String(20), nullable=False)  # 'hs' or 'college'
+
+    # URL information
+    url_slug = db.Column(db.String(200), nullable=False)  # e.g., "southwestern-central"
+    full_url = db.Column(db.String(500))  # Full URL to school page
+
+    # Metadata
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Unique constraint: same school can appear in both HS and College
+    __table_args__ = (
+        db.Index('idx_school_name_source', 'name', 'source'),
+        db.UniqueConstraint('url_slug', 'source', name='uq_school_slug_source'),
+    )
+
+    def __repr__(self):
+        return f'<School {self.name} ({self.source})>'
