@@ -264,6 +264,150 @@ def run_full_college_scraper(limit_schools=None, limit_sailors=None):
         logger.info("="*70)
 
 
+# ============================================================================
+# SEASON-SPECIFIC SCRAPING FUNCTIONS
+# ============================================================================
+
+def scrape_schools_only(source_type='hs'):
+    """
+    Step 1: Scrape all schools and store in database
+    Note: Schools don't change by season, so this scrapes all schools
+
+    Returns:
+        Number of schools stored
+    """
+    from app import app
+
+    with app.app_context():
+        logger.info("="*70)
+        logger.info(f"  STEP 1: Scraping {source_type.upper()} Schools")
+        logger.info("="*70)
+
+        # Use user's school_scraper
+        schools_df = school_scraper.scrape_schools()
+
+        if schools_df.empty:
+            logger.error("No schools found")
+            return 0
+
+        schools_df = school_scraper.verify_url_slugs(schools_df)
+
+        # Store schools in database
+        store_schools_in_db(schools_df, source_type)
+
+        logger.info(f"✓ Stored {len(schools_df)} schools")
+        return len(schools_df)
+
+
+def scrape_rosters_for_season(season_code: str, source_type='hs'):
+    """
+    Step 2: Scrape rosters for a specific season using schools from database
+
+    Args:
+        season_code: Season to scrape (e.g., "f25", "s24")
+        source_type: 'hs' or 'college'
+
+    Returns:
+        Number of sailors stored
+    """
+    from app import app
+
+    with app.app_context():
+        logger.info("="*70)
+        logger.info(f"  STEP 2: Scraping {source_type.upper()} Rosters for {season_code.upper()}")
+        logger.info("="*70)
+
+        # Get schools from database
+        schools = School.query.filter_by(source=source_type).all()
+
+        if not schools:
+            logger.error(f"No schools found in database for {source_type}. Run Step 1 first.")
+            return 0
+
+        logger.info(f"Found {len(schools)} schools in database")
+
+        # Convert to DataFrame format expected by roster_scraper
+        schools_data = []
+        for school in schools:
+            schools_data.append({
+                'School_Name': school.name,
+                'URL_Slug': school.url_slug,
+                'District': school.district or '',
+                'Full_URL': school.full_url or ''
+            })
+
+        schools_df = pd.DataFrame(schools_data)
+
+        # Use user's roster_scraper for single season
+        rosters_df = roster_scraper.scrape_all_rosters(schools_df, seasons=[season_code])
+
+        if rosters_df.empty:
+            logger.warning(f"No rosters found for season {season_code}")
+            return 0
+
+        # Store sailors in database
+        store_sailors_in_db(rosters_df, source_type)
+
+        logger.info(f"✓ Stored {len(rosters_df)} sailor records for {season_code}")
+        return len(rosters_df)
+
+
+def scrape_results_for_season(season_code: str, source_type='hs'):
+    """
+    Step 3: Scrape results for sailors from a specific season using sailors from database
+
+    Args:
+        season_code: Season to scrape results for (e.g., "f25", "s24")
+        source_type: 'hs' or 'college'
+
+    Returns:
+        Number of results stored
+    """
+    from app import app
+
+    with app.app_context():
+        logger.info("="*70)
+        logger.info(f"  STEP 3: Scraping {source_type.upper()} Results for {season_code.upper()}")
+        logger.info("="*70)
+
+        # Get sailors from database (all sailors for now - season filtering happens in results)
+        if source_type == 'hs':
+            sailors = SailorName.query.filter(SailorName.source.in_(['hs', 'both'])).all()
+        else:
+            sailors = SailorName.query.filter(SailorName.source.in_(['college', 'both'])).all()
+
+        if not sailors:
+            logger.error(f"No sailors found in database for {source_type}. Run Step 2 first.")
+            return 0
+
+        logger.info(f"Found {len(sailors)} sailors in database")
+
+        # Convert to DataFrame format expected by scraper_v2
+        sailors_data = []
+        for sailor in sailors:
+            sailors_data.append({
+                'Sailor_Name': sailor.name,
+                'School': sailor.school or '',
+                'Season': season_code[0].upper() + 'all' if season_code[0] in ['f', 's'] else '',
+                'Year': season_code[1:] if len(season_code) > 1 else ''
+            })
+
+        sailors_df = pd.DataFrame(sailors_data)
+
+        # Use user's scraper_v2
+        results_df = scraper_v2.scrape_batch_sailors(sailors_df, delay=0.5, save_interval=50)
+
+        if results_df.empty:
+            logger.warning(f"No results found for season {season_code}")
+            return 0
+
+        # Store results in database
+        store_results_in_db(results_df, source_type)
+
+        logger.info(f"✓ Stored {len(results_df)} results for {season_code}")
+        return len(results_df)
+
+
 if __name__ == '__main__':
     # Test with limited scope
     run_full_hs_scraper(limit_schools=2, limit_sailors=10)

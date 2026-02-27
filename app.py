@@ -571,6 +571,95 @@ def api_run_college_schools_scraper():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/scraper/scrape-schools', methods=['POST'])
+@login_required
+def api_scrape_schools():
+    """
+    Step 1: Scrape all schools and store in database
+    """
+    try:
+        data = request.get_json() or {}
+        source_type = data.get('source', 'hs')  # 'hs' or 'college'
+
+        from threading import Thread
+        from scraper_schools import scrape_schools_only
+
+        def run_with_context():
+            with app.app_context():
+                scrape_schools_only(source_type=source_type)
+
+        thread = Thread(target=run_with_context)
+        thread.start()
+
+        return jsonify({
+            'success': True,
+            'message': f'Scraping {source_type.upper()} schools...'
+        })
+    except Exception as e:
+        app.logger.error(f"Scrape schools error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/scraper/scrape-rosters', methods=['POST'])
+@login_required
+def api_scrape_rosters():
+    """
+    Step 2: Scrape rosters for a specific season
+    """
+    try:
+        data = request.get_json() or {}
+        season_code = data.get('season', 'f25')  # e.g., "f25", "s24"
+        source_type = data.get('source', 'hs')  # 'hs' or 'college'
+
+        from threading import Thread
+        from scraper_schools import scrape_rosters_for_season
+
+        def run_with_context():
+            with app.app_context():
+                scrape_rosters_for_season(season_code=season_code, source_type=source_type)
+
+        thread = Thread(target=run_with_context)
+        thread.start()
+
+        return jsonify({
+            'success': True,
+            'message': f'Scraping {source_type.upper()} rosters for {season_code.upper()}...'
+        })
+    except Exception as e:
+        app.logger.error(f"Scrape rosters error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/scraper/scrape-results', methods=['POST'])
+@login_required
+def api_scrape_results():
+    """
+    Step 3: Scrape results for sailors from a specific season
+    """
+    try:
+        data = request.get_json() or {}
+        season_code = data.get('season', 'f25')  # e.g., "f25", "s24"
+        source_type = data.get('source', 'hs')  # 'hs' or 'college'
+
+        from threading import Thread
+        from scraper_schools import scrape_results_for_season
+
+        def run_with_context():
+            with app.app_context():
+                scrape_results_for_season(season_code=season_code, source_type=source_type)
+
+        thread = Thread(target=run_with_context)
+        thread.start()
+
+        return jsonify({
+            'success': True,
+            'message': f'Scraping {source_type.upper()} results for {season_code.upper()}...'
+        })
+    except Exception as e:
+        app.logger.error(f"Scrape results error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 # ============================================================================
 # AUTHENTICATION ROUTES
 # ============================================================================
