@@ -55,11 +55,20 @@ def store_sailors_in_db(rosters_df: pd.DataFrame, source_type: str):
 
     logger.info(f"Processing {total_rows} sailor records...")
 
-    # Get all existing sailor names in one query (much faster than N queries)
+    # Get all existing sailor names in batches to avoid connection timeout
     all_normalized_names = [row['Sailor_Name'].lower().strip() for _, row in rosters_df.iterrows()]
-    existing_sailors = SailorName.query.filter(
-        SailorName.name_normalized.in_(all_normalized_names)
-    ).all()
+
+    # Query in batches of 500 to prevent SSL timeout on large datasets
+    existing_sailors = []
+    query_batch_size = 500
+    for i in range(0, len(all_normalized_names), query_batch_size):
+        batch = all_normalized_names[i:i + query_batch_size]
+        batch_results = SailorName.query.filter(
+            SailorName.name_normalized.in_(batch)
+        ).all()
+        existing_sailors.extend(batch_results)
+        if (i + query_batch_size) % 2000 == 0:  # Progress every 2000
+            logger.info(f"Queried {min(i + query_batch_size, len(all_normalized_names))}/{len(all_normalized_names)} sailors...")
 
     # Create lookup dict for fast access
     existing_dict = {s.name_normalized: s for s in existing_sailors}
