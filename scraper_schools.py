@@ -120,10 +120,11 @@ def store_sailors_in_db(rosters_df: pd.DataFrame, source_type: str):
             existing_dict[name_normalized] = sailor
             sailors_added += 1
 
-        # Commit in batches to avoid memory issues
+        # Commit in batches and give Neon a rest
         if (idx + 1) % batch_size == 0:
             db.session.commit()
             logger.info(f"Progress: {idx + 1}/{total_rows} ({(idx+1)/total_rows*100:.1f}%) - Added {sailors_added}, Updated {sailors_updated}")
+            time.sleep(0.5)  # Give Neon 500ms rest between batches
 
     # Final commit
     db.session.commit()
@@ -131,15 +132,27 @@ def store_sailors_in_db(rosters_df: pd.DataFrame, source_type: str):
 
 
 def store_results_in_db(results_df: pd.DataFrame, source_type: str):
-    """Store results from DataFrame into database"""
+    """Store results from DataFrame into database - optimized with batching"""
     results_added = 0
+    batch_size = 10  # Commit every 10 results
+    total_rows = len(results_df)
+
+    logger.info(f"Processing {total_rows} result records...")
+
+    # Pre-load all sailors to avoid repeated queries
+    all_sailor_names = [row['Sailor_Name'].lower().strip() for _, row in results_df.iterrows()]
+    sailors = SailorName.query.filter(
+        SailorName.name_normalized.in_(all_sailor_names)
+    ).all()
+    sailor_lookup = {s.name_normalized: s for s in sailors}
+    logger.info(f"Pre-loaded {len(sailor_lookup)} sailors")
 
     for idx, row in results_df.iterrows():
         sailor_name = row['Sailor_Name']
         name_normalized = sailor_name.lower().strip()
 
-        # Find sailor in database
-        sailor = SailorName.query.filter_by(name_normalized=name_normalized).first()
+        # Find sailor in pre-loaded lookup
+        sailor = sailor_lookup.get(name_normalized)
         if not sailor:
             logger.warning(f"Sailor not found: {sailor_name}")
             continue
@@ -201,8 +214,15 @@ def store_results_in_db(results_df: pd.DataFrame, source_type: str):
                 db.session.add(result)
                 results_added += 1
 
+        # Commit in batches and give Neon a rest
+        if (idx + 1) % batch_size == 0:
+            db.session.commit()
+            logger.info(f"Progress: {idx + 1}/{total_rows} ({(idx+1)/total_rows*100:.1f}%) - Added {results_added} results")
+            time.sleep(0.5)  # Give Neon 500ms rest between batches
+
+    # Final commit
     db.session.commit()
-    logger.info(f"Stored {results_added} new results in database")
+    logger.info(f"✓ Stored {results_added} new results in database")
 
 
 def run_full_hs_scraper(limit_schools=None, limit_sailors=None):
