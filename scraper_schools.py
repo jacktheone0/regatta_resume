@@ -50,7 +50,7 @@ def store_sailors_in_db(rosters_df: pd.DataFrame, source_type: str):
     """Store sailor names from DataFrame into database - optimized with batching"""
     sailors_added = 0
     sailors_updated = 0
-    batch_size = 1000
+    batch_size = 10  # Commit every 10 sailors
     total_rows = len(rosters_df)
 
     logger.info(f"Processing {total_rows} sailor records...")
