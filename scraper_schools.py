@@ -139,13 +139,49 @@ def store_results_in_db(results_df: pd.DataFrame, source_type: str):
 
     logger.info(f"Processing {total_rows} result records...")
 
-    # Pre-load all sailors to avoid repeated queries
+    # Pre-load all sailors in batches to avoid SSL timeout
     all_sailor_names = [row['Sailor_Name'].lower().strip() for _, row in results_df.iterrows()]
-    sailors = SailorName.query.filter(
-        SailorName.name_normalized.in_(all_sailor_names)
-    ).all()
-    sailor_lookup = {s.name_normalized: s for s in sailors}
-    logger.info(f"Pre-loaded {len(sailor_lookup)} sailors")
+
+    # Query in batches of 10 to prevent SSL timeout
+    all_sailors = []
+    query_batch_size = 10
+    for i in range(0, len(all_sailor_names), query_batch_size):
+        batch = all_sailor_names[i:i + query_batch_size]
+
+        # Retry logic for transient connection issues
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                batch_results = SailorName.query.filter(
+                    SailorName.name_normalized.in_(batch)
+                ).all()
+                all_sailors.extend(batch_results)
+                break
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Query batch {i//query_batch_size + 1} failed (attempt {attempt + 1}/{max_retries}), retrying...")
+                    db.session.rollback()
+                    time.sleep(1)  # Wait before retry
+                    continue
+                else:
+                    logger.error(f"Query batch {i//query_batch_size + 1} failed after {max_retries} attempts")
+                    raise
+
+        if (i + query_batch_size) % 100 == 0:  # Progress every 100
+            logger.info(f"Pre-loaded {min(i + query_batch_size, len(all_sailor_names))}/{len(all_sailor_names)} sailors...")
+
+    sailor_lookup = {s.name_normalized: s for s in all_sailors}
+    logger.info(f"✓ Pre-loaded {len(sailor_lookup)} sailors")
+
+    # Pre-load existing results to avoid repeated queries
+    sailor_ids = [s.id for s in all_sailors]
+    if source_type == 'hs':
+        existing_results = HSResult.query.filter(HSResult.sailor_name_id.in_(sailor_ids)).all()
+        existing_lookup = {(r.sailor_name_id, r.regatta_name): r for r in existing_results}
+    else:
+        existing_results = CollegeResult.query.filter(CollegeResult.sailor_name_id.in_(sailor_ids)).all()
+        existing_lookup = {(r.sailor_name_id, r.regatta_name): r for r in existing_results}
+    logger.info(f"✓ Pre-loaded {len(existing_lookup)} existing results")
 
     for idx, row in results_df.iterrows():
         sailor_name = row['Sailor_Name']
@@ -191,27 +227,21 @@ def store_results_in_db(results_df: pd.DataFrame, source_type: str):
             'raw_row_data': raw_row
         }
 
-        # Store in appropriate table
-        if source_type == 'hs' and row.get('Source') == 'HS':
-            existing = HSResult.query.filter_by(
-                sailor_name_id=sailor.id,
-                regatta_name=row['Regatta']
-            ).first()
+        # Store in appropriate table (check pre-loaded existing results)
+        result_key = (sailor.id, row['Regatta'])
 
-            if not existing:
+        if source_type == 'hs' and row.get('Source') == 'HS':
+            if result_key not in existing_lookup:
                 result = HSResult(**result_data)
                 db.session.add(result)
+                existing_lookup[result_key] = result  # Add to lookup to prevent duplicates in same batch
                 results_added += 1
 
         elif source_type == 'college' and row.get('Source') == 'College':
-            existing = CollegeResult.query.filter_by(
-                sailor_name_id=sailor.id,
-                regatta_name=row['Regatta']
-            ).first()
-
-            if not existing:
+            if result_key not in existing_lookup:
                 result = CollegeResult(**result_data)
                 db.session.add(result)
+                existing_lookup[result_key] = result  # Add to lookup to prevent duplicates in same batch
                 results_added += 1
 
         # Commit in batches and give Neon a rest
