@@ -58,9 +58,9 @@ def store_sailors_in_db(rosters_df: pd.DataFrame, source_type: str):
     # Get all existing sailor names in batches to avoid connection timeout
     all_normalized_names = [row['Sailor_Name'].lower().strip() for _, row in rosters_df.iterrows()]
 
-    # Query in batches of 100 to prevent SSL timeout on large datasets
+    # Query in batches of 10 to prevent SSL timeout on large datasets
     existing_sailors = []
-    query_batch_size = 100
+    query_batch_size = 10
     for i in range(0, len(all_normalized_names), query_batch_size):
         batch = all_normalized_names[i:i + query_batch_size]
 
@@ -82,7 +82,7 @@ def store_sailors_in_db(rosters_df: pd.DataFrame, source_type: str):
                     logger.error(f"Query batch {i//query_batch_size + 1} failed after {max_retries} attempts")
                     raise
 
-        if (i + query_batch_size) % 1000 == 0:  # Progress every 1000
+        if (i + query_batch_size) % 500 == 0:  # Progress every 500
             logger.info(f"Queried {min(i + query_batch_size, len(all_normalized_names))}/{len(all_normalized_names)} sailors...")
 
     # Create lookup dict for fast access
