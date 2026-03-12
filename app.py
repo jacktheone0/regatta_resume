@@ -752,6 +752,12 @@ def claim_profile():
     return render_template('claim_profile.html', form=form, sailors=unclaimed_sailors)
 
 
+@app.route('/searchbar')
+def searchbar():
+    """Blank searchbar page for custom development"""
+    return render_template('searchbar.html')
+
+
 # ============================================================================
 # ERROR HANDLERS
 # ============================================================================
