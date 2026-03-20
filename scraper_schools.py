@@ -326,15 +326,63 @@ def run_full_college_scraper(limit_schools=None, limit_sailors=None):
     """
     Full College scraper using user's proven 3-step approach
 
-    Note: User's school_scraper.py is hardcoded for HS URL, so we need to modify it
-    or scrape college schools differently. For now, we'll skip college schools.
+    Args:
+        limit_schools: Max schools to scrape (None = all)
+        limit_sailors: Max sailors to scrape results for (None = all)
     """
     from app import app
 
     with app.app_context():
         logger.info("="*70)
-        logger.info("  COLLEGE SCRAPER NOT YET IMPLEMENTED")
-        logger.info("  (User's school_scraper.py is HS-only)")
+        logger.info("  STEP 1: Scraping COLLEGE Schools")
+        logger.info("="*70)
+
+        # Use user's school_scraper with college source
+        schools_df = school_scraper.scrape_schools(source_type='college')
+
+        if schools_df.empty:
+            logger.error("No schools found")
+            return
+
+        schools_df = school_scraper.verify_url_slugs(schools_df)
+
+        if limit_schools:
+            schools_df = schools_df.head(limit_schools)
+            logger.info(f"Limited to {limit_schools} schools")
+
+        # Store schools in database
+        store_schools_in_db(schools_df, 'college')
+
+        logger.info("="*70)
+        logger.info("  STEP 2: Scraping COLLEGE Rosters")
+        logger.info("="*70)
+
+        # Use user's roster_scraper with college source
+        seasons = ["f25", "s25", "f24", "s24", "f23", "s23", "f22", "s22"]
+        rosters_df = roster_scraper.scrape_all_rosters(schools_df, seasons, source_type='college')
+
+        if rosters_df.empty:
+            logger.error("No rosters found")
+            return
+
+        # Store sailors in database
+        store_sailors_in_db(rosters_df, 'college')
+
+        logger.info("="*70)
+        logger.info("  STEP 3: Scraping Individual Sailor Results")
+        logger.info("="*70)
+
+        # Get sailors to scrape (most recent season first)
+        sailors = Sailor.query.filter_by(source='college').order_by(Sailor.season.desc()).all()
+
+        if limit_sailors:
+            sailors = sailors[:limit_sailors]
+            logger.info(f"Limited to {limit_sailors} sailors")
+
+        scrape_all_sailor_results(sailors)
+
+        logger.info("="*70)
+        logger.info("  COLLEGE SCRAPING COMPLETE")
         logger.info("="*70)
 
 
