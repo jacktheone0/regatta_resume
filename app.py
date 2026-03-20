@@ -70,8 +70,43 @@ if app.config['SCRAPER_ENABLED']:
 def index():
     """Landing page with search"""
     recent_sailors = Sailor.query.order_by(desc(Sailor.updated_at)).limit(10).all()
-    total_sailors = Sailor.query.count()
-    total_regattas = Regatta.query.count()
+    total_sailors = db.session.query(
+        func.count(
+            func.distinct(
+                HSResult.sailor_name_id
+            )
+        )
+    ).scalar() or 0
+    total_sailors += db.session.query(
+        func.count(
+            func.distinct(
+                CollegeResult.sailor_name_id
+            )
+        )
+    ).filter(
+        ~CollegeResult.sailor_name_id.in_(
+            db.session.query(HSResult.sailor_name_id)
+        )
+    ).scalar() or 0
+
+    total_regattas = db.session.query(
+        func.count(
+            func.distinct(
+                HSResult.regatta_name
+            )
+        )
+    ).scalar() or 0
+    total_regattas += db.session.query(
+        func.count(
+            func.distinct(
+                CollegeResult.regatta_name
+            )
+        )
+    ).filter(
+        ~CollegeResult.regatta_name.in_(
+            db.session.query(HSResult.regatta_name)
+        )
+    ).scalar() or 0
 
     return render_template('index.html',
                          recent_sailors=recent_sailors,
