@@ -5,7 +5,7 @@ import time
 from typing import List, Dict
 import sys
 
-def scrape_roster(school_slug: str, season_code: str, school_name: str) -> List[Dict]:
+def scrape_roster(school_slug: str, season_code: str, school_name: str, source_type='hs') -> List[Dict]:
     """
     Scrape roster for a specific school and season
 
@@ -13,11 +13,17 @@ def scrape_roster(school_slug: str, season_code: str, school_name: str) -> List[
         school_slug: URL-formatted school name (e.g., "southwestern-central")
         season_code: Season code (e.g., "f25", "s24")
         school_name: Full school name for reference
+        source_type: 'hs' for high school or 'college' for college
 
     Returns:
         List of sailor dictionaries
     """
-    url = f"https://scores.hssailing.org/schools/{school_slug}/{season_code}/roster/"
+    if source_type == 'college':
+        base_url = "https://scores.collegesailing.org"
+    else:
+        base_url = "https://scores.hssailing.org"
+
+    url = f"{base_url}/schools/{school_slug}/{season_code}/roster/"
 
     try:
         resp = requests.get(url, timeout=30)
@@ -87,13 +93,14 @@ def scrape_roster(school_slug: str, season_code: str, school_name: str) -> List[
         print(f"Error scraping {url}: {e}")
         return []
 
-def scrape_all_rosters(schools_df: pd.DataFrame, seasons: List[str] = None) -> pd.DataFrame:
+def scrape_all_rosters(schools_df: pd.DataFrame, seasons: List[str] = None, source_type='hs') -> pd.DataFrame:
     """
     Scrape rosters for all schools across multiple seasons
 
     Args:
         schools_df: DataFrame with school information (must have 'School_Name' and either 'URL_Slug' or 'Normalized_Slug')
         seasons: List of season codes to scrape (default: f25, s25, f24, s24, f23, s23, f22, s22)
+        source_type: 'hs' for high school or 'college' for college
 
     Returns:
         DataFrame with all sailor rosters
@@ -132,7 +139,7 @@ def scrape_all_rosters(schools_df: pd.DataFrame, seasons: List[str] = None) -> p
             if current % 50 == 0:
                 print(f"Progress: {current}/{total_combinations} ({current/total_combinations*100:.1f}%)")
 
-            sailors = scrape_roster(school_slug, season, school_name)
+            sailors = scrape_roster(school_slug, season, school_name, source_type=source_type)
 
             if sailors:
                 all_sailors.extend(sailors)

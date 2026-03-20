@@ -271,7 +271,7 @@ def run_full_hs_scraper(limit_schools=None, limit_sailors=None):
         logger.info("="*70)
 
         # Use user's school_scraper
-        schools_df = school_scraper.scrape_schools()
+        schools_df = school_scraper.scrape_schools(source_type='hs')
 
         if schools_df.empty:
             logger.error("No schools found")
@@ -292,7 +292,7 @@ def run_full_hs_scraper(limit_schools=None, limit_sailors=None):
 
         # Use user's roster_scraper
         seasons = ["f25", "s25", "f24", "s24", "f23", "s23", "f22", "s22"]
-        rosters_df = roster_scraper.scrape_all_rosters(schools_df, seasons)
+        rosters_df = roster_scraper.scrape_all_rosters(schools_df, seasons, source_type='hs')
 
         if rosters_df.empty:
             logger.error("No rosters found")
@@ -357,8 +357,8 @@ def scrape_schools_only(source_type='hs'):
         logger.info(f"  STEP 1: Scraping {source_type.upper()} Schools")
         logger.info("="*70)
 
-        # Use user's school_scraper
-        schools_df = school_scraper.scrape_schools()
+        # Use user's school_scraper with source_type parameter
+        schools_df = school_scraper.scrape_schools(source_type=source_type)
 
         if schools_df.empty:
             logger.error("No schools found")
@@ -413,7 +413,7 @@ def scrape_rosters_for_season(season_code: str, source_type='hs'):
         schools_df = pd.DataFrame(schools_data)
 
         # Use user's roster_scraper for single season
-        rosters_df = roster_scraper.scrape_all_rosters(schools_df, seasons=[season_code])
+        rosters_df = roster_scraper.scrape_all_rosters(schools_df, seasons=[season_code], source_type=source_type)
 
         if rosters_df.empty:
             logger.warning(f"No rosters found for season {season_code}")

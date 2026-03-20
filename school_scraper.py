@@ -4,13 +4,21 @@ import pandas as pd
 import time
 from typing import List, Dict
 
-def scrape_schools() -> pd.DataFrame:
+def scrape_schools(source_type='hs') -> pd.DataFrame:
     """
-    Scrape all schools from https://scores.hssailing.org/schools/
-    Returns a DataFrame with school names organized by district
+    Scrape all schools from scores.hssailing.org or scores.collegesailing.org
+
+    Args:
+        source_type: 'hs' for high school or 'college' for college
+
+    Returns a DataFrame with school names organized by district/conference
     """
-    url = "https://scores.hssailing.org/schools/"
-    print(f"Scraping schools from {url}...")
+    if source_type == 'college':
+        url = "https://scores.collegesailing.org/schools/"
+    else:
+        url = "https://scores.hssailing.org/schools/"
+
+    print(f"Scraping {source_type.upper()} schools from {url}...")
 
     try:
         resp = requests.get(url, timeout=30)
