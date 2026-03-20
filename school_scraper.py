@@ -14,9 +14,11 @@ def scrape_schools(source_type='hs') -> pd.DataFrame:
     Returns a DataFrame with school names organized by district/conference
     """
     if source_type == 'college':
-        url = "https://scores.collegesailing.org/schools/"
+        base_url = "https://scores.collegesailing.org"
+        url = f"{base_url}/schools/"
     else:
-        url = "https://scores.hssailing.org/schools/"
+        base_url = "https://scores.hssailing.org"
+        url = f"{base_url}/schools/"
 
     print(f"Scraping {source_type.upper()} schools from {url}...")
 
@@ -60,7 +62,7 @@ def scrape_schools(source_type='hs') -> pd.DataFrame:
                         "District": district_name,
                         "School_Name": school_name,
                         "URL_Slug": url_slug,
-                        "Full_URL": school_url if school_url.startswith("http") else f"https://scores.hssailing.org{school_url}"
+                        "Full_URL": school_url if school_url.startswith("http") else f"{base_url}{school_url}"
                     })
 
         # If the above method doesn't work, use a more general approach
@@ -79,7 +81,7 @@ def scrape_schools(source_type='hs') -> pd.DataFrame:
                         "District": "Unknown",
                         "School_Name": school_name,
                         "URL_Slug": url_slug,
-                        "Full_URL": school_url if school_url.startswith("http") else f"https://scores.hssailing.org{school_url}"
+                        "Full_URL": school_url if school_url.startswith("http") else f"{base_url}{school_url}"
                     })
 
         df = pd.DataFrame(schools_data)
