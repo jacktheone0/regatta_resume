@@ -372,14 +372,14 @@ def run_full_college_scraper(limit_schools=None, limit_sailors=None):
         logger.info("  STEP 3: Scraping Individual Sailor Results")
         logger.info("="*70)
 
-        # Get sailors to scrape (most recent season first)
-        sailors = Sailor.query.filter_by(source='college').order_by(Sailor.season.desc()).all()
-
         if limit_sailors:
-            sailors = sailors[:limit_sailors]
+            rosters_df = rosters_df.head(limit_sailors)
             logger.info(f"Limited to {limit_sailors} sailors")
 
-        scrape_all_sailor_results(sailors)
+        results_df = scraper_v2.scrape_batch_sailors(rosters_df, delay=0.5, save_interval=50)
+
+        if not results_df.empty:
+            store_results_in_db(results_df, 'college')
 
         logger.info("="*70)
         logger.info("  COLLEGE SCRAPING COMPLETE")
