@@ -234,9 +234,8 @@ class ClubspotScraper:
 
             regatta = self._get_or_create_regatta(regatta_metadata)
 
-            # Now scrape results using Selenium
-            results_url = f"{url}/results?list_view=true"
-            results_data = self._scrape_results_with_selenium(results_url, regatta.id)
+            # Scrape results from the base regatta URL (ClubSpot shows results there)
+            results_data = self._scrape_results_with_selenium(url, regatta.id)
 
             # Save results to database
             for result_data in results_data:
@@ -246,157 +245,215 @@ class ClubspotScraper:
             logger.error(f"Error in _scrape_regatta for {regatta_id}: {e}")
             raise
 
-    def _scrape_results_with_selenium(self, results_url, regatta_id, timeout=12):
+    def _scrape_results_with_selenium(self, regatta_url, regatta_id, timeout=20):
         """
-        Scrape results page using Selenium to handle JavaScript rendering
-        Based on user's proven scraping logic
+        Scrape a ClubSpot regatta page using Selenium.
 
-        Args:
-            results_url: URL of the results page
-            regatta_id: Database ID of the regatta
-            timeout: Seconds to wait for page to load
+        ClubSpot results table columns (confirmed structure):
+          Place | SAILORS (Skipper\\nCrew) | SAIL NUMBER | BOAT NAME | CLUB/ORG | NET | TOTAL | R1 | R2 ...
+
+        The fleet/class (e.g. "505") is shown in a dropdown above the table, not in the table itself.
+        Multiple fleets on the same regatta each need a separate scrape pass.
 
         Returns:
-            List of result dicts with sailor names and placements
+            List of result dicts — two per row (skipper + crew) when both names are present.
         """
         driver = None
-        results = []
+        all_results = []
+
+        # ClubSpot shows results on the base regatta URL, not a /results sub-path
+        url = regatta_url.rstrip('/')
 
         try:
             driver = make_driver()
-            driver.get(results_url)
-
-            # Wait for any table rows to appear
-            def any_rows_present(d):
-                # Classic table rows with TDs
-                if d.find_elements(By.CSS_SELECTOR, "table tbody tr td"):
-                    return True
-                # Virtualized/data-grid rows
-                if d.find_elements(By.CSS_SELECTOR, "[role='row'] [role='gridcell'], .ag-row .ag-cell"):
-                    return True
-                return False
+            driver.get(url)
 
             try:
-                WebDriverWait(driver, timeout).until(any_rows_present)
+                WebDriverWait(driver, timeout).until(
+                    lambda d: d.find_elements(By.CSS_SELECTOR, "table tbody tr td")
+                )
             except TimeoutException:
-                logger.warning(f"Timeout waiting for results table at {results_url}")
+                logger.warning(f"Timeout waiting for results table at {url}")
                 return []
 
-            # JavaScript to extract all data rows (excluding headers)
-            HARVEST_JS = r"""
-const out = new Set();
+            # Discover all fleet options from the dropdown (e.g. "505", "Laser")
+            fleet_options = self._get_fleet_options(driver)
+            if not fleet_options:
+                fleet_options = [None]  # single unnamed fleet
 
-// 1) Classic tables: only rows in <tbody> that have at least one <td>
-document.querySelectorAll("table").forEach(tbl => {
-    tbl.querySelectorAll("tbody tr").forEach(tr => {
-        const tds = Array.from(tr.querySelectorAll("td"));
-        if (tds.length === 0) return;
-        const parts = tds.map(td => (td.innerText || td.textContent || "").trim()).filter(Boolean);
-        const line = parts.join(" | ").trim();
-        if (line) out.add(line);
-    });
+            for fleet_name in fleet_options:
+                if fleet_name:
+                    self._select_fleet(driver, fleet_name)
+                    time.sleep(1.5)  # let the table re-render
+
+                # Scroll down to trigger any lazy-loaded rows
+                last_height = 0
+                for _ in range(20):
+                    driver.execute_script("window.scrollBy(0, window.innerHeight);")
+                    time.sleep(0.15)
+                    new_height = driver.execute_script("return document.body.scrollHeight")
+                    if new_height == last_height:
+                        break
+                    last_height = new_height
+
+                # Extract raw rows via JS — use Array, never Set, to avoid silent dedup
+                HARVEST_JS = r"""
+const rows = [];
+document.querySelectorAll("table tbody tr").forEach(tr => {
+    const tds = Array.from(tr.querySelectorAll("td"));
+    if (tds.length === 0) return;
+    // Keep raw innerText per cell (including newlines for stacked names)
+    const cells = tds.map(td => (td.innerText || td.textContent || "").trim());
+    rows.push(cells.join(" | "));
 });
-
-// 2) WAI-ARIA grids
-document.querySelectorAll("[role='row']").forEach(row => {
-    const cells = Array.from(row.querySelectorAll("[role='gridcell'], [role='cell']"));
-    if (cells.length === 0) return;
-    const parts = cells.map(c => (c.innerText || c.textContent || "").trim()).filter(Boolean);
-    const line = parts.join(" | ").trim();
-    if (line) out.add(line);
-});
-
-// 3) AG Grid
-document.querySelectorAll(".ag-row").forEach(row => {
-    const cells = Array.from(row.querySelectorAll(".ag-cell"));
-    if (cells.length === 0) return;
-    const parts = cells.map(c => (c.innerText || c.textContent || "").trim()).filter(Boolean);
-    const line = parts.join(" | ").trim();
-    if (line) out.add(line);
-});
-
-return Array.from(out);
+return rows;
 """
+                raw_rows = driver.execute_script(HARVEST_JS) or []
+                logger.info(f"Fleet '{fleet_name}': got {len(raw_rows)} raw rows from {url}")
 
-            # Scroll to load lazy content
-            for _ in range(8):
-                driver.execute_script("window.scrollBy(0, Math.max(600, window.innerHeight));")
-                time.sleep(0.2)
+                for raw in raw_rows:
+                    parsed = self._parse_result_row(raw, fleet_type=fleet_name)
+                    all_results.extend(parsed)  # returns list (skipper + crew)
 
-            # Extract all row data
-            rows_text = driver.execute_script(HARVEST_JS) or []
-
-            # Parse each row to extract sailor name and placement
-            for row_text in rows_text:
-                result_data = self._parse_result_row(row_text)
-                if result_data:
-                    results.append(result_data)
-
-            logger.info(f"Extracted {len(results)} results from {results_url}")
-            return results
+            logger.info(f"Total parsed results: {len(all_results)} from {url}")
+            return all_results
 
         except Exception as e:
-            logger.error(f"Error scraping results with Selenium: {e}")
+            logger.error(f"Selenium error scraping {url}: {e}")
             return []
         finally:
             if driver:
                 driver.quit()
 
-    def _parse_result_row(self, row_text):
-        """
-        Parse a single row of results text to extract sailor data
+    def _get_fleet_options(self, driver):
+        """Return list of fleet names from the fleet dropdown, or [] if none found."""
+        try:
+            JS = r"""
+const btn = document.querySelector('button');
+const labels = [];
+// Look for a dropdown/select that contains fleet names
+document.querySelectorAll('button, [role="option"], option').forEach(el => {
+    const txt = (el.innerText || el.textContent || '').trim();
+    // Fleet names are short (e.g. "505", "Laser", "FJ") — skip long strings
+    if (txt && txt.length < 30 && !txt.toLowerCase().includes('filter') &&
+        !txt.toLowerCase().includes('export') && !txt.toLowerCase().includes('print')) {
+        labels.push(txt);
+    }
+});
+return [...new Set(labels)];
+"""
+            candidates = driver.execute_script(JS) or []
+            # The first button text on a ClubSpot results page is usually the active fleet
+            # Try a more targeted selector for the fleet switcher
+            try:
+                fleet_btns = driver.find_elements(
+                    By.XPATH,
+                    "//button[string-length(normalize-space(text())) > 0 and string-length(normalize-space(text())) < 20]"
+                )
+                fleets = []
+                for btn in fleet_btns[:10]:
+                    txt = btn.text.strip()
+                    if txt and not any(kw in txt.lower() for kw in ['filter', 'export', 'print', 'menu', 'close', 'sign', 'log']):
+                        fleets.append(txt)
+                if fleets:
+                    return fleets[:1]  # start with just the active/first fleet; expand later if needed
+            except Exception:
+                pass
+            return []
+        except Exception as e:
+            logger.debug(f"Could not read fleet options: {e}")
+            return []
 
-        Args:
-            row_text: Pipe-separated row text (e.g., "1 | 12345 | John Doe | 15.0")
+    def _select_fleet(self, driver, fleet_name):
+        """Click the fleet dropdown option matching fleet_name."""
+        try:
+            btn = driver.find_element(
+                By.XPATH,
+                f"//button[normalize-space(text())='{fleet_name}'] | //li[normalize-space(text())='{fleet_name}'] | //*[@role='option'][normalize-space(text())='{fleet_name}']"
+            )
+            btn.click()
+        except Exception as e:
+            logger.debug(f"Could not select fleet '{fleet_name}': {e}")
+
+    def _parse_result_row(self, row_text, fleet_type=None):
+        """
+        Parse one pipe-separated row from a ClubSpot results table.
+
+        Confirmed column order (from live page inspection):
+          0: place number (e.g. "1", "2")
+          1: sailors — skipper and crew stacked with newline ("Eric Anderson\\nNic Baird")
+          2: sail number (e.g. "USA 9248") — stored as crew_partner context, not model field
+          3: boat name (e.g. "N = 2") — stored in boat_type field
+          4: club / org (e.g. "StFYC") — stored in team_name
+          5: NET points (e.g. "6") — stored in points_scored
+          6: TOTAL points — skipped
+          7+: individual race results (R1, R2 ...) — skipped
 
         Returns:
-            Dict with sailor_name, placement, and optionally points_scored
+            List of dicts — one for skipper, one for crew (when present).
+            Empty list if row cannot be parsed.
         """
         try:
-            # Split by pipe separator
             parts = [p.strip() for p in row_text.split('|')]
 
             if len(parts) < 2:
-                return None
+                return []
 
-            # First column is usually placement
-            placement_text = parts[0]
-            placement = self._extract_placement(placement_text)
-
+            # Column 0: placement
+            placement = self._extract_placement(parts[0])
             if not placement:
-                return None
+                return []  # skip header-like or non-numeric rows
 
-            # Find sailor name (usually 2nd or 3rd column, not a number)
-            sailor_name = None
-            for part in parts[1:5]:  # Check next few columns
-                if part and len(part) > 2 and not part.replace('.', '').isdigit():
-                    # Split on newlines if multiple names
-                    names = part.split('\n')
-                    sailor_name = names[0].strip()
-                    break
+            # Column 1: sailors (skipper \n crew)
+            sailors_cell = parts[1] if len(parts) > 1 else ''
+            names = [n.strip() for n in sailors_cell.split('\n') if n.strip()]
+            if not names:
+                return []
 
-            if not sailor_name:
-                return None
+            skipper = names[0]
+            crew = names[1] if len(names) > 1 else None
 
-            result_data = {
+            # Column 3: boat name → boat_type field
+            boat_name = parts[3].strip() if len(parts) > 3 else None
+            if boat_name and boat_name.lower() in ('none', ''):
+                boat_name = None
+
+            # Column 4: club/org → team_name
+            team_name = parts[4].strip() if len(parts) > 4 else None
+
+            # Column 5: NET points → points_scored
+            points_scored = None
+            if len(parts) > 5:
+                try:
+                    points_scored = float(parts[5])
+                except ValueError:
+                    pass
+
+            # Use fleet_type as boat_type if we have it (more meaningful than boat name)
+            resolved_boat_type = fleet_type or boat_name
+
+            base = {
                 'placement': placement,
-                'sailor_name': sailor_name
+                'boat_type': resolved_boat_type,
+                'team_name': team_name,
+                'points_scored': points_scored,
+                'raw_row_data': row_text,
             }
 
-            # Try to extract points (usually last column)
-            for part in reversed(parts[-3:]):
-                try:
-                    points = float(part)
-                    result_data['points_scored'] = points
-                    break
-                except ValueError:
-                    continue
+            results = []
 
-            return result_data
+            skipper_entry = {**base, 'sailor_name': skipper, 'role': 'skipper', 'crew_partner': crew}
+            results.append(skipper_entry)
+
+            if crew:
+                crew_entry = {**base, 'sailor_name': crew, 'role': 'crew', 'crew_partner': skipper}
+                results.append(crew_entry)
+
+            return results
 
         except Exception as e:
-            logger.debug(f"Error parsing result row: {e}")
-            return None
+            logger.debug(f"Error parsing row '{row_text}': {e}")
+            return []
 
     def _parse_api_regatta_data(self, api_data, regatta_id, url):
         """Parse regatta metadata from Parse API response"""
@@ -443,35 +500,38 @@ return Array.from(out);
         if not sailor_name:
             return
 
-        # Get or create sailor
         sailor = self._get_or_create_sailor(sailor_name)
 
-        # Check if result already exists
+        # Dedup key includes role so skipper and crew of the same boat are separate records,
+        # and a sailor competing in multiple divisions of the same regatta is also allowed.
+        role = result_data.get('role', '')
         existing = Result.query.filter_by(
             sailor_id=sailor.id,
-            regatta_id=regatta_id
+            regatta_id=regatta_id,
+            role=role
         ).first()
 
         if existing:
-            logger.debug(f"Result already exists: {sailor_name} at regatta {regatta_id}")
+            logger.debug(f"Result already exists: {sailor_name} ({role}) at regatta {regatta_id}")
             return
 
-        # Create new result
         result = Result(
             sailor_id=sailor.id,
             regatta_id=regatta_id,
             placement=result_data['placement'],
             boat_type=result_data.get('boat_type'),
-            role=result_data.get('role'),
+            role=role,
             points_scored=result_data.get('points_scored'),
             division=result_data.get('division'),
-            team_name=result_data.get('team_name')
+            team_name=result_data.get('team_name'),
+            crew_partner=result_data.get('crew_partner'),
+            raw_row_data=result_data.get('raw_row_data'),
         )
 
         db.session.add(result)
         db.session.commit()
         self.stats['results_added'] += 1
-        logger.debug(f"Added result: {sailor_name} - {result_data['placement']}")
+        logger.debug(f"Added result: {sailor_name} ({role}) - place {result_data['placement']}")
 
     def _get_or_create_sailor(self, name):
         """Get existing sailor or create new one"""
