@@ -249,19 +249,28 @@ class ClubspotScraper:
         """
         Scrape a ClubSpot regatta page using Selenium.
 
-        ClubSpot results table columns (confirmed structure):
-          Place | SAILORS (Skipper\\nCrew) | SAIL NUMBER | BOAT NAME | CLUB/ORG | NET | TOTAL | R1 | R2 ...
+        Confirmed DOM structure (from live page inspection):
+          <tr class="tableRow resultsRow ...">
+            <td class="first-cell">        ← placement number
+            <td class="sticky-column">     ← sailor name(s); two-handed boats stack Skipper\\nCrew
+            <td class="print_smallPadding"> ← sail number
+            <td class="print_smallPadding"> ← boat name ("None" when absent)
+            <td class="print_smallPadding"> ← club/org
+            <td class="print_smallPadding"> ← NET points
+            <td class="print_smallPadding"> ← TOTAL points
+            <td class="print_smallPadding"> ← R1, R2, ... (individual race results)
 
-        The fleet/class (e.g. "505") is shown in a dropdown above the table, not in the table itself.
-        Multiple fleets on the same regatta each need a separate scrape pass.
+        Multiple fleets (e.g. ILCA 6, ILCA 7) are rendered as separate tables on the same
+        page simultaneously — not hidden behind a dropdown. Each table is preceded by a
+        fleet-label element. The JS below discovers fleet context per table.
 
         Returns:
-            List of result dicts — two per row (skipper + crew) when both names are present.
+            List of result dicts — two per row for two-handed boats (skipper + crew),
+            one per row for single-handed.
         """
         driver = None
         all_results = []
 
-        # ClubSpot shows results on the base regatta URL, not a /results sub-path
         url = regatta_url.rstrip('/')
 
         try:
@@ -270,50 +279,69 @@ class ClubspotScraper:
 
             try:
                 WebDriverWait(driver, timeout).until(
-                    lambda d: d.find_elements(By.CSS_SELECTOR, "table tbody tr td")
+                    lambda d: d.find_elements(By.CSS_SELECTOR, "table tbody tr td.first-cell")
                 )
             except TimeoutException:
                 logger.warning(f"Timeout waiting for results table at {url}")
                 return []
 
-            # Discover all fleet options from the dropdown (e.g. "505", "Laser")
-            fleet_options = self._get_fleet_options(driver)
-            if not fleet_options:
-                fleet_options = [None]  # single unnamed fleet
+            # Scroll until page stops growing to load all lazy-rendered rows
+            last_height = 0
+            for _ in range(30):
+                driver.execute_script("window.scrollBy(0, window.innerHeight);")
+                time.sleep(0.15)
+                new_height = driver.execute_script("return document.body.scrollHeight")
+                if new_height == last_height:
+                    break
+                last_height = new_height
 
-            for fleet_name in fleet_options:
-                if fleet_name:
-                    self._select_fleet(driver, fleet_name)
-                    time.sleep(1.5)  # let the table re-render
+            # Extract rows from all tables on the page.
+            # Each table gets its fleet name from the nearest preceding short-text element
+            # (e.g. "ILCA 6", "ILCA 7", "505"). We append it as a sentinel field.
+            HARVEST_JS = r"""
+const results = [];
+document.querySelectorAll("table").forEach(function(table) {
+    // Walk backwards/up in the DOM to find a short fleet label near this table
+    var fleetName = "";
+    try {
+        var el = table;
+        for (var depth = 0; depth < 6; depth++) {
+            el = el.parentElement;
+            if (!el || el === document.body) break;
+            var prev = el.previousElementSibling;
+            if (prev) {
+                var txt = (prev.innerText || prev.textContent || "").trim().split("\n")[0].trim();
+                if (txt && txt.length > 0 && txt.length <= 20) {
+                    fleetName = txt;
+                    break;
+                }
+            }
+        }
+    } catch(e) {}
 
-                # Scroll down to trigger any lazy-loaded rows
-                last_height = 0
-                for _ in range(20):
-                    driver.execute_script("window.scrollBy(0, window.innerHeight);")
-                    time.sleep(0.15)
-                    new_height = driver.execute_script("return document.body.scrollHeight")
-                    if new_height == last_height:
-                        break
-                    last_height = new_height
+    table.querySelectorAll("tbody tr").forEach(function(tr) {
+        // Use class-specific selectors for reliability
+        var placementCell = tr.querySelector("td.first-cell");
+        var sailorCell    = tr.querySelector("td.sticky-column");
+        if (!placementCell || !sailorCell) return;
 
-                # Extract raw rows via JS — use Array, never Set, to avoid silent dedup
-                HARVEST_JS = r"""
-const rows = [];
-document.querySelectorAll("table tbody tr").forEach(tr => {
-    const tds = Array.from(tr.querySelectorAll("td"));
-    if (tds.length === 0) return;
-    // Keep raw innerText per cell (including newlines for stacked names)
-    const cells = tds.map(td => (td.innerText || td.textContent || "").trim());
-    rows.push(cells.join(" | "));
+        var allTds = Array.from(tr.querySelectorAll("td"));
+        var cells = allTds.map(function(td) {
+            return (td.innerText || td.textContent || "").trim();
+        });
+        // Append fleet sentinel so the parser knows which fleet this row belongs to
+        cells.push("__fleet__" + fleetName);
+        results.push(cells.join(" | "));
+    });
 });
-return rows;
+return results;
 """
-                raw_rows = driver.execute_script(HARVEST_JS) or []
-                logger.info(f"Fleet '{fleet_name}': got {len(raw_rows)} raw rows from {url}")
+            raw_rows = driver.execute_script(HARVEST_JS) or []
+            logger.info(f"Got {len(raw_rows)} raw rows from {url}")
 
-                for raw in raw_rows:
-                    parsed = self._parse_result_row(raw, fleet_type=fleet_name)
-                    all_results.extend(parsed)  # returns list (skipper + crew)
+            for raw in raw_rows:
+                parsed = self._parse_result_row(raw)
+                all_results.extend(parsed)
 
             logger.info(f"Total parsed results: {len(all_results)} from {url}")
             return all_results
@@ -325,86 +353,43 @@ return rows;
             if driver:
                 driver.quit()
 
-    def _get_fleet_options(self, driver):
-        """Return list of fleet names from the fleet dropdown, or [] if none found."""
-        try:
-            JS = r"""
-const btn = document.querySelector('button');
-const labels = [];
-// Look for a dropdown/select that contains fleet names
-document.querySelectorAll('button, [role="option"], option').forEach(el => {
-    const txt = (el.innerText || el.textContent || '').trim();
-    // Fleet names are short (e.g. "505", "Laser", "FJ") — skip long strings
-    if (txt && txt.length < 30 && !txt.toLowerCase().includes('filter') &&
-        !txt.toLowerCase().includes('export') && !txt.toLowerCase().includes('print')) {
-        labels.push(txt);
-    }
-});
-return [...new Set(labels)];
-"""
-            candidates = driver.execute_script(JS) or []
-            # The first button text on a ClubSpot results page is usually the active fleet
-            # Try a more targeted selector for the fleet switcher
-            try:
-                fleet_btns = driver.find_elements(
-                    By.XPATH,
-                    "//button[string-length(normalize-space(text())) > 0 and string-length(normalize-space(text())) < 20]"
-                )
-                fleets = []
-                for btn in fleet_btns[:10]:
-                    txt = btn.text.strip()
-                    if txt and not any(kw in txt.lower() for kw in ['filter', 'export', 'print', 'menu', 'close', 'sign', 'log']):
-                        fleets.append(txt)
-                if fleets:
-                    return fleets[:1]  # start with just the active/first fleet; expand later if needed
-            except Exception:
-                pass
-            return []
-        except Exception as e:
-            logger.debug(f"Could not read fleet options: {e}")
-            return []
-
-    def _select_fleet(self, driver, fleet_name):
-        """Click the fleet dropdown option matching fleet_name."""
-        try:
-            btn = driver.find_element(
-                By.XPATH,
-                f"//button[normalize-space(text())='{fleet_name}'] | //li[normalize-space(text())='{fleet_name}'] | //*[@role='option'][normalize-space(text())='{fleet_name}']"
-            )
-            btn.click()
-        except Exception as e:
-            logger.debug(f"Could not select fleet '{fleet_name}': {e}")
-
-    def _parse_result_row(self, row_text, fleet_type=None):
+    def _parse_result_row(self, row_text):
         """
-        Parse one pipe-separated row from a ClubSpot results table.
+        Parse one pipe-separated row emitted by HARVEST_JS.
 
-        Confirmed column order (from live page inspection):
-          0: place number (e.g. "1", "2")
-          1: sailors — skipper and crew stacked with newline ("Eric Anderson\\nNic Baird")
-          2: sail number (e.g. "USA 9248") — stored as crew_partner context, not model field
-          3: boat name (e.g. "N = 2") — stored in boat_type field
-          4: club / org (e.g. "StFYC") — stored in team_name
-          5: NET points (e.g. "6") — stored in points_scored
-          6: TOTAL points — skipped
-          7+: individual race results (R1, R2 ...) — skipped
+        Confirmed ClubSpot column order (indices after splitting on ' | '):
+          0  — placement        (from td.first-cell)
+          1  — sailor name(s)   (from td.sticky-column; two-handed boats have Skipper\\nCrew)
+          2  — sail number      (ignored)
+          3  — boat name        ("None" when absent)
+          4  — club / org       → stored as team_name
+          5  — NET points       → stored as points_scored
+          6  — TOTAL points     (ignored)
+          7+ — R1, R2, ...      (individual race results, ignored)
+          last — "__fleet__<name>" sentinel appended by HARVEST_JS
 
         Returns:
-            List of dicts — one for skipper, one for crew (when present).
-            Empty list if row cannot be parsed.
+            List of dicts — one entry per sailor (two for two-handed boats, one for single-handed).
+            Empty list if the row cannot be meaningfully parsed.
         """
         try:
-            parts = [p.strip() for p in row_text.split('|')]
+            parts = [p.strip() for p in row_text.split(' | ')]
 
             if len(parts) < 2:
                 return []
 
-            # Column 0: placement
+            # Strip fleet sentinel from the end
+            fleet_type = None
+            if parts[-1].startswith('__fleet__'):
+                fleet_type = parts[-1][len('__fleet__'):].strip() or None
+                parts = parts[:-1]
+
+            # Column 0: placement (must be a positive integer)
             placement = self._extract_placement(parts[0])
             if not placement:
-                return []  # skip header-like or non-numeric rows
+                return []
 
-            # Column 1: sailors (skipper \n crew)
+            # Column 1: sailor name(s) — single-handed has one name, two-handed has Skipper\nCrew
             sailors_cell = parts[1] if len(parts) > 1 else ''
             names = [n.strip() for n in sailors_cell.split('\n') if n.strip()]
             if not names:
@@ -413,15 +398,15 @@ return [...new Set(labels)];
             skipper = names[0]
             crew = names[1] if len(names) > 1 else None
 
-            # Column 3: boat name → boat_type field
+            # Column 3: boat name (skip ClubSpot's "None" placeholder)
             boat_name = parts[3].strip() if len(parts) > 3 else None
-            if boat_name and boat_name.lower() in ('none', ''):
+            if not boat_name or boat_name.lower() == 'none':
                 boat_name = None
 
-            # Column 4: club/org → team_name
+            # Column 4: club / org
             team_name = parts[4].strip() if len(parts) > 4 else None
 
-            # Column 5: NET points → points_scored
+            # Column 5: NET points
             points_scored = None
             if len(parts) > 5:
                 try:
@@ -429,7 +414,7 @@ return [...new Set(labels)];
                 except ValueError:
                     pass
 
-            # Use fleet_type as boat_type if we have it (more meaningful than boat name)
+            # Fleet class (e.g. "ILCA 6", "505") is more useful as boat_type than the boat name
             resolved_boat_type = fleet_type or boat_name
 
             base = {
@@ -441,18 +426,14 @@ return [...new Set(labels)];
             }
 
             results = []
-
-            skipper_entry = {**base, 'sailor_name': skipper, 'role': 'skipper', 'crew_partner': crew}
-            results.append(skipper_entry)
-
+            results.append({**base, 'sailor_name': skipper, 'role': 'skipper', 'crew_partner': crew})
             if crew:
-                crew_entry = {**base, 'sailor_name': crew, 'role': 'crew', 'crew_partner': skipper}
-                results.append(crew_entry)
+                results.append({**base, 'sailor_name': crew, 'role': 'crew', 'crew_partner': skipper})
 
             return results
 
         except Exception as e:
-            logger.debug(f"Error parsing row '{row_text}': {e}")
+            logger.debug(f"Error parsing row: {e}")
             return []
 
     def _parse_api_regatta_data(self, api_data, regatta_id, url):
