@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+
+{% block title %}{{ sailor_name.name }} - RegattaResume{% endblock %}
+
+{% block content %}
+<div class="container my-5">
+    <!-- Header -->
+    <div class="profile-header mb-4">
+        <div class="row align-items-center">
+            <div class="col-md-8">
+                <h1 class="mb-2">{{ sailor_name.name }}</h1>
+                {% if sailor_name.school %}
+                    <p class="text-muted lead mb-0">{{ sailor_name.school }}</p>
+                {% endif %}
+                <p class="mt-2">
+                    <span class="badge bg-primary">{{ sailor_name.source.upper() if sailor_name.source != 'both' else 'HS/College' }}</span>
+                    {% if sailor_name.is_claimed %}
+                        <span class="badge bg-success">Claimed Profile</span>
+                    {% endif %}
+                </p>
+            </div>
+            <div class="col-md-4 text-md-end">
+                {% if not sailor_name.is_claimed %}
+                    <a href="{{ url_for('claim_profile') }}" class="btn btn-primary">
+                        Claim This Profile
+                    </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Stats Cards -->
+    <div class="row mb-4">
+        <div class="col-md-3 col-6 mb-3">
+            <div class="stat-box">
+                <div class="stat-value">{{ stats.total_regattas }}</div>
+                <div class="stat-label">Total Regattas</div>
+            </div>
+        </div>
+        <div class="col-md-3 col-6 mb-3">
+            <div class="stat-box highlight">
+                <div class="stat-value">{{ stats.best_finish or 'N/A' }}</div>
+                <div class="stat-label">Best Finish</div>
+            </div>
+        </div>
+        <div class="col-md-3 col-6 mb-3">
+            <div class="stat-box">
+                <div class="stat-value">{{ stats.average_placement or 'N/A' }}</div>
+                <div class="stat-label">Avg Placement</div>
+            </div>
+        </div>
+        <div class="col-md-3 col-6 mb-3">
+            <div class="stat-box">
+                <div class="stat-value">{{ stats.top_3_count }}</div>
+                <div class="stat-label">Podium Finishes</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Source Breakdown -->
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title mb-3">Results Breakdown</h5>
+                    <div class="row">
+                        <div class="col-md-3 mb-2">
+                            <strong>High School:</strong> {{ stats.hs_count }} results
+                        </div>
+                        <div class="col-md-3 mb-2">
+                            <strong>College:</strong> {{ stats.college_count }} results
+                        </div>
+                        <div class="col-md-3 mb-2">
+                            <strong>Top 10 Finishes:</strong> {{ stats.top_10_count }}
+                        </div>
+                        <div class="col-md-3 mb-2">
+                            <strong>Total:</strong> {{ stats.total_regattas }} regattas
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- High School Results -->
+    {% if hs_results %}
+    <div class="card mb-4">
+        <div class="card-header bg-white">
+            <h5 class="mb-0">High School Results <span class="badge bg-primary">{{ hs_results|length }}</span></h5>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Regatta</th>
+                            <th>School</th>
+                            <th>Place</th>
+                            <th>Position</th>
+                            <th>Division</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for result in hs_results %}
+                        <tr class="{% if result.place_numeric and result.place_numeric <= 3 %}table-warning{% endif %}">
+                            <td>{{ result.regatta_date.strftime('%b %d, %Y') if result.regatta_date else 'N/A' }}</td>
+                            <td>
+                                {% if result.regatta_link %}
+                                    <a href="{{ result.regatta_link }}" target="_blank">{{ result.regatta_name }}</a>
+                                {% else %}
+                                    {{ result.regatta_name }}
+                                {% endif %}
+                            </td>
+                            <td>{{ result.school or 'N/A' }}</td>
+                            <td>
+                                <span class="badge
+                                    {% if result.place_numeric == 1 %}bg-warning text-dark
+                                    {% elif result.place_numeric == 2 %}bg-secondary
+                                    {% elif result.place_numeric == 3 %}bg-info
+                                    {% else %}bg-light text-dark
+                                    {% endif %}">
+                                    {{ result.place or 'N/A' }}
+                                </span>
+                            </td>
+                            <td>{{ result.position or 'N/A' }}</td>
+                            <td>{{ result.division or 'N/A' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- College Results -->
+    {% if college_results %}
+    <div class="card mb-4">
+        <div class="card-header bg-white">
+            <h5 class="mb-0">College Results <span class="badge bg-success">{{ college_results|length }}</span></h5>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Regatta</th>
+                            <th>School</th>
+                            <th>Place</th>
+                            <th>Position</th>
+                            <th>Division</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for result in college_results %}
+                        <tr class="{% if result.place_numeric and result.place_numeric <= 3 %}table-warning{% endif %}">
+                            <td>{{ result.regatta_date.strftime('%b %d, %Y') if result.regatta_date else 'N/A' }}</td>
+                            <td>
+                                {% if result.regatta_link %}
+                                    <a href="{{ result.regatta_link }}" target="_blank">{{ result.regatta_name }}</a>
+                                {% else %}
+                                    {{ result.regatta_name }}
+                                {% endif %}
+                            </td>
+                            <td>{{ result.school or 'N/A' }}</td>
+                            <td>
+                                <span class="badge
+                                    {% if result.place_numeric == 1 %}bg-warning text-dark
+                                    {% elif result.place_numeric == 2 %}bg-secondary
+                                    {% elif result.place_numeric == 3 %}bg-info
+                                    {% else %}bg-light text-dark
+                                    {% endif %}">
+                                    {{ result.place or 'N/A' }}
+                                </span>
+                            </td>
+                            <td>{{ result.position or 'N/A' }}</td>
+                            <td>{{ result.division or 'N/A' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if not hs_results and not college_results %}
+    <div class="card">
+        <div class="card-body">
+            <p class="text-muted text-center">No results found for this sailor yet.</p>
+        </div>
+    </div>
+    {% endif %}
+
+</div>
+
+<style>
+.profile-header {
+    padding-bottom: 1.5rem;
+    border-bottom: 2px solid #eee;
+}
+
+.stat-box {
+    background: #f8f9fa;
+    padding: 1.5rem;
+    border-radius: 0.5rem;
+    text-align: center;
+}
+
+.stat-box.highlight {
+    background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
+}
+
+.stat-value {
+    font-size: 2rem;
+    font-weight: bold;
+    color: #0066cc;
+}
+
+.stat-box.highlight .stat-value {
+    color: #000;
+}
+
+.stat-label {
+    color: #666;
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
+}
+
+.table-warning {
+    background-color: rgba(255, 215, 0, 0.1) !important;
+}
+</style>
+{% endblock %}

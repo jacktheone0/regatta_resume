@@ -1,1 +1,0 @@
-print(rise and shine)

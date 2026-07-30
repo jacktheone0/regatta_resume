@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block title %}{{ sailor.name }} - Sailing Resume{% endblock %}
+
+{% block content %}
+<div class="resume-minimal">
+    <div class="container my-5" style="max-width: 700px;">
+        <!-- Header -->
+        <header class="mb-5">
+            <h1>{{ sailor.name }}</h1>
+            {% if sailor.home_club %}
+                <p>{{ sailor.home_club }}</p>
+            {% endif %}
+        </header>
+
+        <!-- Bio -->
+        {% if resume_link.custom_bio or sailor.bio %}
+        <section class="mb-5">
+            <p>{{ resume_link.custom_bio or sailor.bio }}</p>
+        </section>
+        {% endif %}
+
+        <!-- Results -->
+        <section>
+            <h2>Results</h2>
+
+            <table class="results-table">
+                {% for result, regatta in results %}
+                <tr>
+                    <td class="placement">{{ result.placement }}</td>
+                    <td class="regatta-info">
+                        <div class="regatta-name">{{ regatta.name }}</div>
+                        <div class="regatta-meta">
+                            {{ regatta.start_date.strftime('%Y') }}
+                            {% if result.boat_type %} • {{ result.boat_type }}{% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </table>
+        </section>
+    </div>
+</div>
+
+<style>
+.resume-minimal {
+    background: white;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #333;
+}
+
+.resume-minimal h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    color: #000;
+}
+
+.resume-minimal h2 {
+    font-size: 1rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-bottom: 2rem;
+    color: #000;
+}
+
+.resume-minimal p {
+    color: #666;
+    line-height: 1.6;
+}
+
+.results-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.results-table tr {
+    border-bottom: 1px solid #eee;
+}
+
+.results-table tr:last-child {
+    border-bottom: none;
+}
+
+.results-table td {
+    padding: 1.5rem 0;
+    vertical-align: top;
+}
+
+.placement {
+    width: 80px;
+    font-weight: 700;
+    font-size: 1.5rem;
+    color: #000;
+}
+
+.regatta-name {
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+    color: #000;
+}
+
+.regatta-meta {
+    color: #999;
+    font-size: 0.875rem;
+}
+
+@media print {
+    .navbar, footer, .btn { display: none; }
+}
+</style>
+{% endblock %}

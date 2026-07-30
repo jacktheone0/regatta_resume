@@ -1,0 +1,518 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Dashboard - RegattaResume{% endblock %}
+
+{% block content %}
+<div class="container my-5">
+    <h1 class="mb-4">Admin Dashboard</h1>
+
+    <!-- Scraper Section -->
+    <div class="row mb-4">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0">Scraper Control</h5>
+                </div>
+                <div class="card-body">
+                    <p>Manually trigger scrapers to fetch regatta data</p>
+
+                    <div class="alert alert-info">
+                        <strong>Note:</strong> The ClubSpot scraper runs automatically every Sunday at 11:59 PM UTC.
+                    </div>
+
+                    <!-- ClubSpot Scraper -->
+                    <h6 class="mb-3">ClubSpot Scraper</h6>
+                    <button id="runScraperBtn" class="btn btn-success me-2 mb-3">
+                        <i class="bi bi-play-circle"></i> Run ClubSpot Scraper
+                    </button>
+
+                    <button id="stopScraperBtn" class="btn btn-danger mb-3">
+                        <i class="bi bi-stop-circle"></i> Stop Scraper
+                    </button>
+
+                    <hr class="my-3">
+
+                    <!-- Season-Based Scraper (3-Step Process) -->
+                    <h6 class="mb-3">Season-Based Scraper (3-Step Process)</h6>
+                    <p class="small text-muted">Scrape schools, rosters, and results for a specific season</p>
+
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="seasonSelect" class="form-label">Season:</label>
+                            <select id="seasonSelect" class="form-select form-select-sm">
+                                <option value="s26">Spring 2026 (s26)</option>
+                                <option value="f25">Fall 2025 (f25)</option>
+                                <option value="s25">Spring 2025 (s25)</option>
+                                <option value="f24">Fall 2024 (f24)</option>
+                                <option value="s24">Spring 2024 (s24)</option>
+                                <option value="f23">Fall 2023 (f23)</option>
+                                <option value="s23">Spring 2023 (s23)</option>
+                                <option value="f22">Fall 2022 (f22)</option>
+                                <option value="s22">Spring 2022 (s22)</option>
+                            </select>
+                            <small class="text-muted">Select season to scrape</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="sourceSelect" class="form-label">Source:</label>
+                            <select id="sourceSelect" class="form-select form-select-sm">
+                                <option value="hs">High School</option>
+                                <option value="college">College</option>
+                            </select>
+                            <small class="text-muted">HS or College</small>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <button id="step1SchoolsBtn" class="btn btn-success me-2 mb-2">
+                            <i class="bi bi-1-circle"></i> Step 1: Scrape Schools
+                        </button>
+                        <button id="step2RostersBtn" class="btn btn-success me-2 mb-2">
+                            <i class="bi bi-2-circle"></i> Step 2: Scrape Rosters
+                        </button>
+                        <button id="step3ResultsBtn" class="btn btn-success mb-2">
+                            <i class="bi bi-3-circle"></i> Step 3: Scrape Results
+                        </button>
+                    </div>
+
+                    <hr class="my-3">
+
+                    <!-- Legacy Full Scrapers -->
+                    <h6 class="mb-3">Legacy Full Scrapers</h6>
+                    <p class="small text-muted">Run complete scraping process (all steps at once with limits)</p>
+
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="limitSchools" class="form-label">Schools Limit:</label>
+                            <input type="number" id="limitSchools" class="form-control form-control-sm" value="5" min="1" max="500">
+                            <small class="text-muted">Max schools to scrape</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="limitSailors" class="form-label">Sailors Limit:</label>
+                            <input type="number" id="limitSailors" class="form-control form-control-sm" value="50" min="1" max="5000">
+                            <small class="text-muted">Max sailors to scrape results for</small>
+                        </div>
+                    </div>
+
+                    <button id="runHSSchoolsBtn" class="btn btn-primary me-2 mb-2">
+                        <i class="bi bi-play-circle"></i> Run HS Schools Scraper
+                    </button>
+
+                    <button id="runCollegeSchoolsBtn" class="btn btn-info mb-2">
+                        <i class="bi bi-play-circle"></i> Run College Schools Scraper
+                    </button>
+
+                    <div id="scraperStatus" class="mt-3" style="display: none;">
+                        <div class="alert" id="statusMessage"></div>
+                    </div>
+
+                    <div id="scraperLogs" class="mt-3" style="display: none;">
+                        <h6>Recent Scraper Runs:</h6>
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Started</th>
+                                        <th>Status</th>
+                                        <th>Regattas</th>
+                                        <th>Sailors</th>
+                                        <th>Results</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="logTableBody">
+                                    <!-- Will be populated by JavaScript -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Database Stats</h5>
+                </div>
+                <div class="card-body">
+                    <div class="stat-item mb-3">
+                        <div class="stat-label">Total Sailors</div>
+                        <div class="stat-value">{{ stats.total_sailors }}</div>
+                    </div>
+                    <div class="stat-item mb-3">
+                        <div class="stat-label">Total Regattas</div>
+                        <div class="stat-value">{{ stats.total_regattas }}</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Total Results</div>
+                        <div class="stat-value">{{ stats.total_results }}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="card">
+        <div class="card-header">
+            <h5 class="mb-0">Quick Actions</h5>
+        </div>
+        <div class="card-body">
+            <a href="{{ url_for('index') }}" class="btn btn-outline-primary me-2">View Site</a>
+            <a href="/api/sailors" class="btn btn-outline-secondary me-2" target="_blank">API Docs</a>
+        </div>
+    </div>
+</div>
+
+<style>
+.stat-item {
+    text-align: center;
+    padding: 1rem;
+    background: #f8f9fa;
+    border-radius: 0.5rem;
+}
+
+.stat-label {
+    font-size: 0.9rem;
+    color: #666;
+    margin-bottom: 0.5rem;
+}
+
+.stat-value {
+    font-size: 2rem;
+    font-weight: bold;
+    color: #0066cc;
+}
+</style>
+
+<script>
+document.getElementById('runScraperBtn').addEventListener('click', async function() {
+    const btn = this;
+    const statusDiv = document.getElementById('scraperStatus');
+    const statusMsg = document.getElementById('statusMessage');
+
+    // Disable button
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting...';
+
+    try {
+        const response = await fetch('/api/scraper/run', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            statusMsg.className = 'alert alert-success';
+            statusMsg.textContent = '✓ ' + data.message + ' - Check back in a few minutes to see results.';
+        } else {
+            statusMsg.className = 'alert alert-danger';
+            statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
+        }
+
+        statusDiv.style.display = 'block';
+
+        // Re-enable button after 10 seconds
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-circle"></i> Run Scraper Now';
+        }, 10000);
+
+    } catch (error) {
+        statusMsg.className = 'alert alert-danger';
+        statusMsg.textContent = '✗ Error: ' + error.message;
+        statusDiv.style.display = 'block';
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-circle"></i> Run Scraper Now';
+    }
+});
+
+// Stop scraper button handler
+document.getElementById('stopScraperBtn').addEventListener('click', async function() {
+    const btn = this;
+    const statusDiv = document.getElementById('scraperStatus');
+    const statusMsg = document.getElementById('statusMessage');
+
+    if (!confirm('Are you sure you want to stop the currently running scraper?')) {
+        return;
+    }
+
+    // Disable button
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Stopping...';
+
+    try {
+        const response = await fetch('/api/scraper/stop', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            statusMsg.className = 'alert alert-success';
+            statusMsg.textContent = '✓ ' + data.message;
+        } else {
+            statusMsg.className = 'alert alert-warning';
+            statusMsg.textContent = '⚠ ' + data.message;
+        }
+
+        statusDiv.style.display = 'block';
+
+        // Re-enable button
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-stop-circle"></i> Stop Scraper';
+        }, 3000);
+
+    } catch (error) {
+        statusMsg.className = 'alert alert-danger';
+        statusMsg.textContent = '✗ Error: ' + error.message;
+        statusDiv.style.display = 'block';
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-stop-circle"></i> Stop Scraper';
+    }
+});
+
+// HS Schools Scraper button handler
+document.getElementById('runHSSchoolsBtn').addEventListener('click', async function() {
+    const btn = this;
+    const statusDiv = document.getElementById('scraperStatus');
+    const statusMsg = document.getElementById('statusMessage');
+    const limitSchools = parseInt(document.getElementById('limitSchools').value) || 5;
+    const limitSailors = parseInt(document.getElementById('limitSailors').value) || 50;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting HS Schools Scraper...';
+
+    try {
+        const response = await fetch('/api/scraper/run-hs-schools', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                limit_schools: limitSchools,
+                limit_sailors: limitSailors
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            statusMsg.className = 'alert alert-success';
+            statusMsg.textContent = '✓ ' + data.message;
+        } else {
+            statusMsg.className = 'alert alert-danger';
+            statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
+        }
+
+        statusDiv.style.display = 'block';
+
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-circle"></i> Run HS Schools Scraper';
+        }, 10000);
+
+    } catch (error) {
+        statusMsg.className = 'alert alert-danger';
+        statusMsg.textContent = '✗ Error: ' + error.message;
+        statusDiv.style.display = 'block';
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-circle"></i> Run HS Schools Scraper';
+    }
+});
+
+// College Schools Scraper button handler
+document.getElementById('runCollegeSchoolsBtn').addEventListener('click', async function() {
+    const btn = this;
+    const statusDiv = document.getElementById('scraperStatus');
+    const statusMsg = document.getElementById('statusMessage');
+    const limitSchools = parseInt(document.getElementById('limitSchools').value) || 5;
+    const limitSailors = parseInt(document.getElementById('limitSailors').value) || 50;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting College Schools Scraper...';
+
+    try {
+        const response = await fetch('/api/scraper/run-college-schools', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                limit_schools: limitSchools,
+                limit_sailors: limitSailors
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            statusMsg.className = 'alert alert-success';
+            statusMsg.textContent = '✓ ' + data.message;
+        } else {
+            statusMsg.className = 'alert alert-danger';
+            statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
+        }
+
+        statusDiv.style.display = 'block';
+
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-circle"></i> Run College Schools Scraper';
+        }, 10000);
+
+    } catch (error) {
+        statusMsg.className = 'alert alert-danger';
+        statusMsg.textContent = '✗ Error: ' + error.message;
+        statusDiv.style.display = 'block';
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-circle"></i> Run College Schools Scraper';
+    }
+});
+
+// Step 1: Scrape Schools button handler
+document.getElementById('step1SchoolsBtn').addEventListener('click', async function() {
+    const btn = this;
+    const statusDiv = document.getElementById('scraperStatus');
+    const statusMsg = document.getElementById('statusMessage');
+    const source = document.getElementById('sourceSelect').value;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Scraping Schools...';
+
+    try {
+        const response = await fetch('/api/scraper/scrape-schools', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source: source })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            statusMsg.className = 'alert alert-success';
+            statusMsg.textContent = '✓ ' + data.message;
+        } else {
+            statusMsg.className = 'alert alert-danger';
+            statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
+        }
+
+        statusDiv.style.display = 'block';
+
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-1-circle"></i> Step 1: Scrape Schools';
+        }, 10000);
+
+    } catch (error) {
+        statusMsg.className = 'alert alert-danger';
+        statusMsg.textContent = '✗ Error: ' + error.message;
+        statusDiv.style.display = 'block';
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-1-circle"></i> Step 1: Scrape Schools';
+    }
+});
+
+// Step 2: Scrape Rosters button handler
+document.getElementById('step2RostersBtn').addEventListener('click', async function() {
+    const btn = this;
+    const statusDiv = document.getElementById('scraperStatus');
+    const statusMsg = document.getElementById('statusMessage');
+    const season = document.getElementById('seasonSelect').value;
+    const source = document.getElementById('sourceSelect').value;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Scraping Rosters...';
+
+    try {
+        const response = await fetch('/api/scraper/scrape-rosters', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ season: season, source: source })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            statusMsg.className = 'alert alert-success';
+            statusMsg.textContent = '✓ ' + data.message;
+        } else {
+            statusMsg.className = 'alert alert-danger';
+            statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
+        }
+
+        statusDiv.style.display = 'block';
+
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-2-circle"></i> Step 2: Scrape Rosters';
+        }, 10000);
+
+    } catch (error) {
+        statusMsg.className = 'alert alert-danger';
+        statusMsg.textContent = '✗ Error: ' + error.message;
+        statusDiv.style.display = 'block';
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-2-circle"></i> Step 2: Scrape Rosters';
+    }
+});
+
+// Step 3: Scrape Results button handler
+document.getElementById('step3ResultsBtn').addEventListener('click', async function() {
+    const btn = this;
+    const statusDiv = document.getElementById('scraperStatus');
+    const statusMsg = document.getElementById('statusMessage');
+    const season = document.getElementById('seasonSelect').value;
+    const source = document.getElementById('sourceSelect').value;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Scraping Results...';
+
+    try {
+        const response = await fetch('/api/scraper/scrape-results', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ season: season, source: source })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            statusMsg.className = 'alert alert-success';
+            statusMsg.textContent = '✓ ' + data.message;
+        } else {
+            statusMsg.className = 'alert alert-danger';
+            statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
+        }
+
+        statusDiv.style.display = 'block';
+
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-3-circle"></i> Step 3: Scrape Results';
+        }, 10000);
+
+    } catch (error) {
+        statusMsg.className = 'alert alert-danger';
+        statusMsg.textContent = '✗ Error: ' + error.message;
+        statusDiv.style.display = 'block';
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-3-circle"></i> Step 3: Scrape Results';
+    }
+});
+
+// Auto-refresh stats every 30 seconds
+setInterval(() => {
+    location.reload();
+}, 30000);
+</script>
+{% endblock %}

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>{{ sailor.name }} - Sailing Resume</title>
+    <style>
+        @page { margin: 2cm; size: A4; }
+        body {
+            font-family: -apple-system, sans-serif;
+            color: #000;
+            line-height: 1.5;
+        }
+        h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 0.25rem;
+        }
+        h2 {
+            font-size: 1rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin: 2rem 0 1.5rem 0;
+        }
+        .subtitle { color: #666; margin-bottom: 2rem; }
+        table { width: 100%; border-collapse: collapse; }
+        tr { border-bottom: 1px solid #eee; }
+        td { padding: 1rem 0; vertical-align: top; }
+        .placement { width: 60px; font-weight: 700; font-size: 1.3rem; }
+        .regatta-name { font-weight: 600; margin-bottom: 0.25rem; }
+        .regatta-meta { color: #999; font-size: 0.875rem; }
+    </style>
+</head>
+<body>
+    <h1>{{ sailor.name }}</h1>
+    {% if sailor.home_club %}<div class="subtitle">{{ sailor.home_club }}</div>{% endif %}
+    {% if resume_link.custom_bio or sailor.bio %}
+    <p style="margin: 2rem 0;">{{ resume_link.custom_bio or sailor.bio }}</p>
+    {% endif %}
+    <h2>Results</h2>
+    <table>
+        {% for result, regatta in results %}
+        <tr>
+            <td class="placement">{{ result.placement }}</td>
+            <td>
+                <div class="regatta-name">{{ regatta.name }}</div>
+                <div class="regatta-meta">
+                    {{ regatta.start_date.strftime('%Y') }}
+                    {% if result.boat_type %} • {{ result.boat_type }}{% endif %}
+                </div>
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>
