@@ -1,45 +1,84 @@
 # RegattaResume
 
-A modern web application for sailors and coaches to track regatta results, build professional sailing resumes, and analyze performance trends.
+A web application that aggregates competitive sailing results from high school and college sailing databases, and lets sailors build professional sailing resumes from their race history.
 
-## Features
+## What It Does
+
+RegattaResume pulls results data from **scores.hssailing.org** and **scores.collegesailing.org**, stores it in a PostgreSQL database, and makes it searchable. Sailors can find their results, view performance statistics, and build shareable resumes. Coaches can pull up analytics views for any sailor in the database.
 
 ### For Sailors
-- **Profile Management**: View all your regatta results in one place
-- **Resume Builder**: Create customizable sailing resumes
-- **Export Options**: Download as PDF or create shareable links
-- **Performance Tracking**: Track your progress over time
-- **Customization**: Choose which results to showcase
+- **Search**: Find your profile by name across both HS and college databases
+- **Sailor Profile**: See all your regatta results, placements, and statistics in one place
+- **Resume Builder**: Choose which results to feature, add a custom bio, and pick a template style (Modern, Classic, or Minimal)
+- **Shareable Links**: Generate a public URL for your resume to send to coaches or colleges
+- **PDF Export**: Download your resume as a PDF
 
 ### For Coaches
-- **Sailor Search**: Find and evaluate sailors by name
-- **Performance Analytics**: View detailed performance trends
-- **Historical Comparison**: Compare recent vs past performance
-- **Configurable Metrics**: Filter by date range, fleet, and more
-- **Export Reports**: Generate analytics reports
+- **Sailor Search**: Look up any sailor in the database by name
+- **Coach View**: Analytics dashboard showing recent vs. historical performance, configurable by time range
+- **Fleet Breakdown**: See how a sailor performs across different boat classes
+- **Performance Trends**: Visual performance trend data over time
 
-### Technical Features
-- Automated scraping from theclubspot.com (runs every Sunday at 11:59 PM)
-- PostgreSQL database (Neon) for reliable data storage
-- RESTful API for data access
-- Responsive design for mobile and desktop
-- Three resume templates (Modern, Classic, Minimal)
+### Admin / Data Management
+- **3-Step Scraper** (admin dashboard):
+  - **Step 1 – Scrape Schools**: Pulls all school listings from hssailing.org or collegesailing.org and stores them in the database
+  - **Step 2 – Scrape Rosters**: For a selected season (e.g. `f25`, `s24`), fetches each school's roster and stores all sailor names
+  - **Step 3 – Scrape Results**: Visits each sailor's individual results page and stores their full race history
+- **Source Selection**: Each scrape step supports HS or College as separate data sources
+- **Season Selection**: Target a specific season code (Fall/Spring + year, e.g. `f25`, `s25`, `f24`)
+- **Batch DB Commits**: Results are committed to the database every 10 records to avoid connection timeouts on Neon
+- **Searchbar Page**: `/searchbar` — a blank page with a Google Custom Search Engine embed for site-wide search
+
+---
+
+## Data Sources
+
+| Source | URL | Data Collected |
+|--------|-----|----------------|
+| High School Sailing | scores.hssailing.org | Schools, rosters, regatta results |
+| College Sailing | scores.collegesailing.org | Schools, rosters, regatta results |
+| TheClubSpot | theclubspot.com | Legacy regatta results (weekly scheduled scrape) |
+
+---
 
 ## Tech Stack
 
-- **Backend**: Python 3.11, Flask
-- **Database**: PostgreSQL (Neon)
-- **Scraper**: BeautifulSoup4, Requests
-- **PDF Generation**: WeasyPrint
-- **Frontend**: Bootstrap 5, Chart.js
-- **Deployment**: Render.com
-- **Task Scheduling**: APScheduler
+| Layer | Technology |
+|-------|------------|
+| Backend | Python 3.11, Flask |
+| Database | PostgreSQL (Neon) |
+| ORM | SQLAlchemy, Flask-Migrate |
+| Scraping | BeautifulSoup4, Requests |
+| PDF Generation | WeasyPrint |
+| Frontend | Bootstrap 5, Chart.js |
+| Authentication | Flask-Login |
+| Scheduling | APScheduler (Sunday 11:59 PM) |
+| Deployment | Render.com (Starter plan) |
+
+---
+
+## Database Schema
+
+| Table | Description |
+|-------|-------------|
+| `users` | User accounts (sailor or coach role) |
+| `sailors` | Sailor profiles from TheClubSpot |
+| `regattas` | Regatta events from TheClubSpot |
+| `results` | Race results linking sailors to regattas (ClubSpot data) |
+| `sailor_names` | All sailors from HS/College scrapers |
+| `hs_results` | High school race results |
+| `college_results` | College race results |
+| `schools` | School listings from HS/College sites |
+| `resume_links` | Shareable resume tokens with customization |
+| `scraper_logs` | Log of scraper runs and outcomes |
+
+---
 
 ## Local Development Setup
 
 ### Prerequisites
 - Python 3.11+
-- PostgreSQL (or Neon account)
+- PostgreSQL or [Neon](https://neon.tech) account
 - Git
 
 ### Installation
@@ -62,11 +101,7 @@ A modern web application for sailors and coaches to track regatta results, build
    ```
 
 4. **Set up environment variables**
-   ```bash
-   cp .env.example .env
-   ```
-
-   Edit `.env` and add your configuration:
+   Create a `.env` file with:
    ```
    FLASK_APP=app.py
    FLASK_ENV=development
@@ -77,208 +112,135 @@ A modern web application for sailors and coaches to track regatta results, build
 5. **Initialize the database**
    ```bash
    flask db upgrade
-   # or
-   python -c "from app import app, db; app.app_context().push(); db.create_all()"
    ```
 
 6. **Run the development server**
    ```bash
    flask run
-   # or
-   python app.py
    ```
+   App runs at `http://localhost:5000`
 
-   The app will be available at `http://localhost:5000`
+---
 
-## Deployment to Render.com
+## Deployment (Render.com)
 
-This app is configured for easy deployment to Render.com.
-
-### Quick Deploy
-
-1. **Push to GitHub**
-   ```bash
-   git add .
-   git commit -m "Initial commit"
-   git push origin main
-   ```
-
-2. **Connect to Render**
-   - Go to [render.com](https://render.com)
-   - Click "New +" → "Blueprint"
-   - Connect your GitHub repository
-   - Render will automatically detect `render.yaml`
-
-3. **Set up Neon Database** (if not using Render PostgreSQL)
-   - Create a Neon database at [neon.tech](https://neon.tech)
-   - Copy the connection string
-   - In Render dashboard, add environment variable:
-     - Key: `DATABASE_URL`
-     - Value: Your Neon connection string
-
-4. **Deploy**
-   - Click "Apply"
-   - Render will build and deploy your app
-   - Your app will be live at `https://your-app-name.onrender.com`
-
-### Manual Deployment Steps
-
-If you prefer manual setup:
-
-1. Create a new Web Service on Render
-2. Connect your GitHub repo
+1. Push to GitHub
+2. In Render dashboard, create a new **Web Service** and connect the repo
 3. Configure:
    - **Build Command**: `./build.sh`
    - **Start Command**: `gunicorn app:app`
-   - **Environment Variables**:
-     - `FLASK_ENV=production`
-     - `SECRET_KEY=<generate-secure-key>`
-     - `DATABASE_URL=<your-neon-connection-string>`
+   - **Environment Variables**: `FLASK_ENV`, `SECRET_KEY`, `DATABASE_URL`
+4. The app deploys automatically on every push to `main`
 
-4. Create a PostgreSQL database (or use external Neon)
-5. Deploy!
+> **Note**: Scraping runs as a background thread inside the web process. If a deployment happens mid-scrape, the thread will be killed. Data committed in batches up to that point is preserved. For long scrapes, consider moving to a Render Background Worker.
 
-## Usage
-
-### Running the Scraper Manually
-
-```bash
-flask scrape
-```
-
-Or via the web interface (if logged in as admin):
-```
-POST /api/scraper/run
-```
-
-### Creating Migrations
-
-When you modify database models:
-
-```bash
-flask db migrate -m "Description of changes"
-flask db upgrade
-```
+---
 
 ## Project Structure
 
 ```
 regatta_resume/
-├── app.py                 # Main Flask application
-├── models.py              # Database models
-├── forms.py               # WTForms for authentication
-├── utils.py               # Helper functions
-├── scraper.py             # Web scraper for theclubspot.com
-├── config.py              # Configuration settings
-├── requirements.txt       # Python dependencies
-├── build.sh              # Build script for Render
-├── Procfile              # Process file for deployment
-├── render.yaml           # Render deployment config
-├── migrations/           # Database migrations
-├── templates/            # Jinja2 HTML templates
+├── app.py                  # Flask app, routes, scheduler
+├── models.py               # SQLAlchemy models
+├── forms.py                # WTForms (login, register, claim profile)
+├── config.py               # Environment-based config
+├── utils.py                # Stats, PDF generation, performance trends
+├── scraper.py              # TheClubSpot scraper (legacy, scheduled)
+├── scraper_schools.py      # Main orchestration: stores sailors/results in DB
+├── school_scraper.py       # Scrapes school listings from HS/College sites
+├── roster_scraper.py       # Scrapes season rosters for each school
+├── scraper_v2.py           # Reference scraper for individual sailor results
+├── migrations/             # Alembic database migrations
+├── templates/              # Jinja2 HTML templates
 │   ├── base.html
 │   ├── index.html
 │   ├── sailor_profile.html
-│   ├── resume_builder.html
+│   ├── sailor_name_profile.html
 │   ├── coach_view.html
-│   ├── resume_*.html     # Resume templates
+│   ├── resume_builder.html
+│   ├── resume_modern.html / resume_classic.html / resume_minimal.html
+│   ├── resume_*_pdf.html   # PDF variants of each resume template
+│   ├── admin.html          # Scraper control panel
+│   ├── searchbar.html      # Google Custom Search embed
 │   └── ...
-└── static/               # Static assets
-    ├── css/
-    │   └── style.css
-    └── js/
-        └── main.js
+└── static/
+    ├── css/style.css
+    └── js/main.js
 ```
-
-## API Endpoints
-
-### Public Endpoints
-- `GET /` - Landing page
-- `GET /search?q=<name>` - Search sailors
-- `GET /sailor/<id>` - Sailor profile
-- `GET /coach-view/<id>` - Coach analytics view
-- `GET /resume/<token>` - Shared resume
-
-### Authenticated Endpoints
-- `POST /login` - User login
-- `POST /register` - User registration
-- `GET /claim-profile` - Claim sailor profile
-- `GET /sailor/<id>/resume-builder` - Resume builder
-
-### API Routes
-- `GET /api/sailors/<id>/stats` - Sailor statistics
-- `GET /api/sailors/<id>/results` - Sailor results
-- `POST /api/resume-link/create` - Create shareable resume
-- `GET /api/resume-link/<token>/pdf` - Download PDF
-- `POST /api/scraper/run` - Trigger scraper (admin)
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `FLASK_ENV` | Environment (development/production) | development |
-| `SECRET_KEY` | Flask secret key | Required |
-| `DATABASE_URL` | PostgreSQL connection string | Required |
-| `SCRAPER_ENABLED` | Enable scheduled scraping | true |
-| `ENABLE_REGISTRATION` | Allow new user registration | true |
-| `ENABLE_PDF_EXPORT` | Enable PDF resume exports | true |
-
-## Customizing the Scraper
-
-The scraper in `scraper.py` is designed to work with theclubspot.com. To customize for your specific needs:
-
-1. Update the selectors in `_extract_regatta_metadata()` and `_extract_results()`
-2. Modify `_get_regatta_list()` to match the site's URL structure
-3. Test with: `flask scrape`
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## Troubleshooting
-
-### Database Connection Issues
-- Verify `DATABASE_URL` is correct
-- Check Neon database is active
-- Ensure IP whitelist allows connections
-
-### Scraper Not Working
-- Verify theclubspot.com structure hasn't changed
-- Check network connectivity
-- Review scraper logs
-
-### PDF Generation Errors
-- Ensure WeasyPrint dependencies are installed
-- Check template syntax in `resume_*_pdf.html`
-
-### Scheduler Not Running
-- Verify `SCRAPER_ENABLED=true`
-- Check server logs for errors
-- Ensure timezone is set correctly
-
-## License
-
-MIT License - See LICENSE file for details
-
-## Acknowledgments
-
-- Data sourced from [TheClubSpot.com](https://theclubspot.com)
-- Built with Flask, Bootstrap, and Chart.js
-- Deployed on Render.com
-
-## Support
-
-For issues and questions:
-- Open an issue on GitHub
-- Check the troubleshooting section
-- Review API documentation
 
 ---
 
-**Built for sailors, by sailors.** ⛵
+## API Endpoints
+
+### Public
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/` | Landing page |
+| GET | `/search?q=<name>` | Search sailors (returns JSON) |
+| GET | `/sailor/<id>` | Sailor profile (ClubSpot data) |
+| GET | `/sailor-name/<id>` | Sailor profile (HS/College data) |
+| GET | `/coach-view/<id>` | Coach analytics view |
+| GET | `/resume/<token>` | View shared resume |
+| GET | `/searchbar` | Google Custom Search page |
+
+### Authenticated
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET/POST | `/login` | Login |
+| GET/POST | `/register` | Register |
+| GET | `/logout` | Logout |
+| GET/POST | `/claim-profile` | Claim a sailor profile |
+| GET | `/sailor/<id>/resume-builder` | Resume builder (owner only) |
+| GET | `/admin` | Admin dashboard |
+
+### API (Authenticated)
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/api/sailors/<id>/stats` | Sailor statistics |
+| GET | `/api/sailors/<id>/results` | All sailor results |
+| POST | `/api/resume-link/create` | Create shareable resume link |
+| GET | `/api/resume-link/<token>/pdf` | Download resume as PDF |
+| POST | `/api/scraper/run` | Run ClubSpot scraper |
+| POST | `/api/scraper/stop` | Stop running scraper |
+| POST | `/api/scraper/scrape-schools` | Step 1: Scrape school listings |
+| POST | `/api/scraper/scrape-rosters` | Step 2: Scrape season rosters |
+| POST | `/api/scraper/scrape-results` | Step 3: Scrape sailor results |
+
+---
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `FLASK_ENV` | `development` or `production` | `development` |
+| `SECRET_KEY` | Flask secret key | Required |
+| `DATABASE_URL` | PostgreSQL connection string | Required |
+| `SCRAPER_ENABLED` | Enable weekly scheduled scrape | `true` |
+| `ENABLE_REGISTRATION` | Allow new registrations | `true` |
+| `ENABLE_PDF_EXPORT` | Enable PDF downloads | `true` |
+
+---
+
+## Troubleshooting
+
+**Database connection timeouts (Neon)**
+Neon suspends idle connections. The scraper uses batches of 10 DB commits with retry logic and 500ms sleep between commits to avoid SSL timeout errors on long scraping runs.
+
+**Scraper stops mid-run on Render**
+Background threads die if the web process restarts (deploy, maintenance, or OOM). Data committed before the stop is preserved. To avoid this, move the scraper to a Render Background Worker service.
+
+**College scraper scraping HS schools**
+The `source_type` parameter must be passed through all three layers: `school_scraper.py`, `roster_scraper.py`, and `scraper_schools.py`. Verify each function receives and forwards `source_type` correctly.
+
+**PDF generation errors**
+Ensure WeasyPrint system dependencies are installed (`build.sh` handles this on Render).
+
+---
+
+## License
+
+MIT License
+
+---
+
+*Built for sailors, by sailors.*
