@@ -102,6 +102,28 @@
         </div>
 
         <div class="col-md-4">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">Last Completed</h5>
+                </div>
+                <div class="card-body p-2">
+                    <table class="table table-sm small mb-0">
+                        <thead>
+                            <tr>
+                                <th>Step</th>
+                                <th>Section</th>
+                                <th>Season</th>
+                                <th>Level</th>
+                                <th>Finished</th>
+                            </tr>
+                        </thead>
+                        <tbody id="progressTableBody">
+                            <tr><td colspan="5" class="text-muted">No completed sections yet</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0">Live Scraper Log</h5>
@@ -462,7 +484,7 @@ document.getElementById('step3ResultsBtn').addEventListener('click', async funct
     };
 })();
 
-// Refresh DB stats in place every 30 seconds (no page reload)
+// Refresh DB stats and the Last Completed table in place every 30 seconds
 async function refreshStats() {
     try {
         const response = await fetch('/admin/stats.json');
@@ -471,10 +493,32 @@ async function refreshStats() {
         document.getElementById('statTotalSailors').textContent = stats.total_sailors;
         document.getElementById('statTotalRegattas').textContent = stats.total_regattas;
         document.getElementById('statTotalResults').textContent = stats.total_results;
+
+        const body = document.getElementById('progressTableBody');
+        if (body && Array.isArray(stats.progress) && stats.progress.length > 0) {
+            body.innerHTML = '';
+            for (const p of stats.progress) {
+                const tr = document.createElement('tr');
+                const cells = [
+                    p.step_label,
+                    p.section || '—',
+                    p.season ? p.season.toUpperCase() : '—',
+                    p.source ? p.source.toUpperCase() : '—',
+                    p.finished_at ? new Date(p.finished_at).toLocaleString() : '—'
+                ];
+                for (const value of cells) {
+                    const td = document.createElement('td');
+                    td.textContent = value;
+                    tr.appendChild(td);
+                }
+                body.appendChild(tr);
+            }
+        }
     } catch (e) {
         // Leave the last known values in place on network errors
     }
 }
+refreshStats();
 setInterval(refreshStats, 30000);
 </script>
 {% endblock %}

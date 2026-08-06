@@ -404,11 +404,33 @@ def admin_dashboard():
 @app.route('/admin/stats.json')
 @login_required
 def admin_stats_json():
-    """Database stats for in-place refresh on the admin page"""
+    """Database stats + latest scraper section completions for in-place refresh"""
+    # Most recent completion row per step (rows with step set are written
+    # only at section boundaries by scraper_schools._db_log)
+    latest_ids = [row[0] for row in db.session.query(
+        func.max(ScraperLogEntry.id)
+    ).filter(ScraperLogEntry.step.isnot(None)).group_by(ScraperLogEntry.step).all()]
+
+    step_order = ['schools', 'rosters', 'results']
+    step_labels = {'schools': 'Step 1 · Schools', 'rosters': 'Step 2 · Rosters', 'results': 'Step 3 · Results'}
+
+    progress_rows = []
+    if latest_ids:
+        progress_rows = ScraperLogEntry.query.filter(ScraperLogEntry.id.in_(latest_ids)).all()
+        progress_rows.sort(key=lambda e: step_order.index(e.step) if e.step in step_order else 99)
+
     return jsonify({
         'total_sailors': Sailor.query.count(),
         'total_regattas': Regatta.query.count(),
-        'total_results': Result.query.count()
+        'total_results': Result.query.count(),
+        'progress': [{
+            'step': e.step,
+            'step_label': step_labels.get(e.step, e.step),
+            'section': e.section,
+            'season': e.season,
+            'source': e.source,
+            'finished_at': e.created_at.isoformat() + 'Z' if e.created_at else None,
+        } for e in progress_rows]
     })
 
 

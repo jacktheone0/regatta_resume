@@ -464,9 +464,13 @@ def scrape_schools_only(source_type='hs'):
             return 0
 
         schools_df = school_scraper.verify_url_slugs(schools_df)
+        _db_log(f"Step 1 ({source_type.upper()}): school list scrape finished — {len(schools_df)} schools",
+                step='schools', section='scrape', source=source_type)
 
         # Store schools in database
         store_schools_in_db(schools_df, source_type)
+        _db_log(f"Step 1 ({source_type.upper()}): school store finished — {len(schools_df)} schools",
+                step='schools', section='store', source=source_type)
 
         logger.info(f"✓ Stored {len(schools_df)} schools")
         return len(schools_df)
@@ -519,8 +523,13 @@ def scrape_rosters_for_season(season_code: str, source_type='hs'):
             logger.warning(f"No rosters found for season {season_code}")
             return 0
 
+        _db_log(f"Step 2 ({source_type.upper()} {season_code.upper()}): roster scrape finished — {len(rosters_df)} sailor rows",
+                step='rosters', section='scrape', season=season_code, source=source_type)
+
         # Store sailors in database
         store_sailors_in_db(rosters_df, source_type)
+        _db_log(f"Step 2 ({source_type.upper()} {season_code.upper()}): sailor store finished — {len(rosters_df)} sailor rows",
+                step='rosters', section='store', season=season_code, source=source_type)
 
         logger.info(f"✓ Stored {len(rosters_df)} sailor records for {season_code}")
         return len(rosters_df)
@@ -576,8 +585,13 @@ def scrape_results_for_season(season_code: str, source_type='hs'):
             logger.warning(f"No results found for season {season_code}")
             return 0
 
+        _db_log(f"Step 3 ({source_type.upper()} {season_code.upper()}): results scrape finished — {len(results_df)} result rows",
+                step='results', section='scrape', season=season_code, source=source_type)
+
         # Store results in database
         store_results_in_db(results_df, source_type)
+        _db_log(f"Step 3 ({source_type.upper()} {season_code.upper()}): results store finished — {len(results_df)} result rows",
+                step='results', section='store', season=season_code, source=source_type)
 
         logger.info(f"✓ Stored {len(results_df)} results for {season_code}")
         return len(results_df)
