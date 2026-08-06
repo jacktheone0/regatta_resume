@@ -399,6 +399,17 @@ def admin_dashboard():
     return render_template('admin.html', stats=stats)
 
 
+@app.route('/admin/stats.json')
+@login_required
+def admin_stats_json():
+    """Database stats for in-place refresh on the admin page"""
+    return jsonify({
+        'total_sailors': Sailor.query.count(),
+        'total_regattas': Regatta.query.count(),
+        'total_results': Result.query.count()
+    })
+
+
 # ============================================================================
 # API ENDPOINTS
 # ============================================================================

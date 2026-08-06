@@ -16,7 +16,7 @@
                 <div class="card-body">
                     <p>Manually trigger scrapers to fetch regatta data</p>
 
-                    <div class="alert alert-info">
+                    <div class="alert alert-info alert-permanent">
                         <strong>Note:</strong> The ClubSpot scraper runs automatically every Sunday at 11:59 PM UTC.
                     </div>
 
@@ -75,7 +75,7 @@
                     </div>
 
                     <div id="scraperStatus" class="mt-3" style="display: none;">
-                        <div class="alert" id="statusMessage"></div>
+                        <div class="alert alert-permanent" id="statusMessage"></div>
                     </div>
 
                     <div id="scraperLogs" class="mt-3" style="display: none;">
@@ -109,15 +109,15 @@
                 <div class="card-body">
                     <div class="stat-item mb-3">
                         <div class="stat-label">Total Sailors</div>
-                        <div class="stat-value">{{ stats.total_sailors }}</div>
+                        <div class="stat-value" id="statTotalSailors">{{ stats.total_sailors }}</div>
                     </div>
                     <div class="stat-item mb-3">
                         <div class="stat-label">Total Regattas</div>
-                        <div class="stat-value">{{ stats.total_regattas }}</div>
+                        <div class="stat-value" id="statTotalRegattas">{{ stats.total_regattas }}</div>
                     </div>
                     <div class="stat-item">
                         <div class="stat-label">Total Results</div>
-                        <div class="stat-value">{{ stats.total_results }}</div>
+                        <div class="stat-value" id="statTotalResults">{{ stats.total_results }}</div>
                     </div>
                 </div>
             </div>
@@ -178,10 +178,10 @@ document.getElementById('runScraperBtn').addEventListener('click', async functio
         const data = await response.json();
 
         if (data.success) {
-            statusMsg.className = 'alert alert-success';
+            statusMsg.className = 'alert alert-success alert-permanent';
             statusMsg.textContent = '✓ ' + data.message + ' - Check back in a few minutes to see results.';
         } else {
-            statusMsg.className = 'alert alert-danger';
+            statusMsg.className = 'alert alert-danger alert-permanent';
             statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
         }
 
@@ -194,7 +194,7 @@ document.getElementById('runScraperBtn').addEventListener('click', async functio
         }, 10000);
 
     } catch (error) {
-        statusMsg.className = 'alert alert-danger';
+        statusMsg.className = 'alert alert-danger alert-permanent';
         statusMsg.textContent = '✗ Error: ' + error.message;
         statusDiv.style.display = 'block';
 
@@ -228,10 +228,10 @@ document.getElementById('stopScraperBtn').addEventListener('click', async functi
         const data = await response.json();
 
         if (data.success) {
-            statusMsg.className = 'alert alert-success';
+            statusMsg.className = 'alert alert-success alert-permanent';
             statusMsg.textContent = '✓ ' + data.message;
         } else {
-            statusMsg.className = 'alert alert-warning';
+            statusMsg.className = 'alert alert-warning alert-permanent';
             statusMsg.textContent = '⚠ ' + data.message;
         }
 
@@ -244,7 +244,7 @@ document.getElementById('stopScraperBtn').addEventListener('click', async functi
         }, 3000);
 
     } catch (error) {
-        statusMsg.className = 'alert alert-danger';
+        statusMsg.className = 'alert alert-danger alert-permanent';
         statusMsg.textContent = '✗ Error: ' + error.message;
         statusDiv.style.display = 'block';
 
@@ -273,10 +273,10 @@ document.getElementById('step1SchoolsBtn').addEventListener('click', async funct
         const data = await response.json();
 
         if (data.success) {
-            statusMsg.className = 'alert alert-success';
+            statusMsg.className = 'alert alert-success alert-permanent';
             statusMsg.textContent = '✓ ' + data.message;
         } else {
-            statusMsg.className = 'alert alert-danger';
+            statusMsg.className = 'alert alert-danger alert-permanent';
             statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
         }
 
@@ -288,7 +288,7 @@ document.getElementById('step1SchoolsBtn').addEventListener('click', async funct
         }, 10000);
 
     } catch (error) {
-        statusMsg.className = 'alert alert-danger';
+        statusMsg.className = 'alert alert-danger alert-permanent';
         statusMsg.textContent = '✗ Error: ' + error.message;
         statusDiv.style.display = 'block';
 
@@ -318,10 +318,10 @@ document.getElementById('step2RostersBtn').addEventListener('click', async funct
         const data = await response.json();
 
         if (data.success) {
-            statusMsg.className = 'alert alert-success';
+            statusMsg.className = 'alert alert-success alert-permanent';
             statusMsg.textContent = '✓ ' + data.message;
         } else {
-            statusMsg.className = 'alert alert-danger';
+            statusMsg.className = 'alert alert-danger alert-permanent';
             statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
         }
 
@@ -333,7 +333,7 @@ document.getElementById('step2RostersBtn').addEventListener('click', async funct
         }, 10000);
 
     } catch (error) {
-        statusMsg.className = 'alert alert-danger';
+        statusMsg.className = 'alert alert-danger alert-permanent';
         statusMsg.textContent = '✗ Error: ' + error.message;
         statusDiv.style.display = 'block';
 
@@ -363,10 +363,10 @@ document.getElementById('step3ResultsBtn').addEventListener('click', async funct
         const data = await response.json();
 
         if (data.success) {
-            statusMsg.className = 'alert alert-success';
+            statusMsg.className = 'alert alert-success alert-permanent';
             statusMsg.textContent = '✓ ' + data.message;
         } else {
-            statusMsg.className = 'alert alert-danger';
+            statusMsg.className = 'alert alert-danger alert-permanent';
             statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
         }
 
@@ -378,7 +378,7 @@ document.getElementById('step3ResultsBtn').addEventListener('click', async funct
         }, 10000);
 
     } catch (error) {
-        statusMsg.className = 'alert alert-danger';
+        statusMsg.className = 'alert alert-danger alert-permanent';
         statusMsg.textContent = '✗ Error: ' + error.message;
         statusDiv.style.display = 'block';
 
@@ -387,9 +387,19 @@ document.getElementById('step3ResultsBtn').addEventListener('click', async funct
     }
 });
 
-// Auto-refresh stats every 30 seconds
-setInterval(() => {
-    location.reload();
-}, 30000);
+// Refresh DB stats in place every 30 seconds (no page reload)
+async function refreshStats() {
+    try {
+        const response = await fetch('/admin/stats.json');
+        if (!response.ok) return;
+        const stats = await response.json();
+        document.getElementById('statTotalSailors').textContent = stats.total_sailors;
+        document.getElementById('statTotalRegattas').textContent = stats.total_regattas;
+        document.getElementById('statTotalResults').textContent = stats.total_results;
+    } catch (e) {
+        // Leave the last known values in place on network errors
+    }
+}
+setInterval(refreshStats, 30000);
 </script>
 {% endblock %}
