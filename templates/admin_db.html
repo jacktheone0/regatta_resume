@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block title %}View Database - RegattaResume{% endblock %}
+
+{% block content %}
+<div class="container-fluid my-5 px-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1 class="mb-0">View Database</h1>
+        <a href="{{ url_for('admin_dashboard') }}" class="btn btn-outline-secondary">&larr; Back to Admin</a>
+    </div>
+
+    <ul class="nav nav-pills mb-3 flex-wrap">
+        {% for t in tables %}
+        <li class="nav-item">
+            <a class="nav-link py-1 px-2 {% if t == table %}active{% endif %}"
+               href="{{ url_for('admin_db_browser', table=t) }}">{{ t }}</a>
+        </li>
+        {% endfor %}
+    </ul>
+
+    <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="mb-0"><code>{{ table }}</code></h5>
+            <span class="text-muted small">Page {{ page }} of {{ total_pages }} ({{ total }} rows) &middot; read-only</span>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-sm table-striped table-hover mb-0">
+                    <thead>
+                        <tr>
+                            {% for col in columns %}
+                            {% set next_dir = 'asc' if (sort == col and direction == 'desc') else 'desc' %}
+                            <th class="text-nowrap">
+                                <a class="text-decoration-none"
+                                   href="{{ url_for('admin_db_browser', table=table, sort=col, dir=next_dir) }}">
+                                    {{ col }}{% if sort == col %} {{ '▼' if direction == 'desc' else '▲' }}{% endif %}
+                                </a>
+                            </th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in rows %}
+                        <tr>
+                            {% for col in columns %}
+                            {% set value = row[col] %}
+                            <td class="small">
+                                {% if value is none %}
+                                <span class="text-muted">&mdash;</span>
+                                {% else %}
+                                {{ (value | string)[:120] }}{% if (value | string) | length > 120 %}&hellip;{% endif %}
+                                {% endif %}
+                            </td>
+                            {% endfor %}
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="{{ columns | length }}" class="text-muted p-3">No rows</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card-footer d-flex justify-content-between">
+            {% if page > 1 %}
+            <a class="btn btn-sm btn-outline-primary"
+               href="{{ url_for('admin_db_browser', table=table, sort=sort, dir=direction, page=page-1) }}">&larr; Previous</a>
+            {% else %}
+            <span></span>
+            {% endif %}
+            {% if page < total_pages %}
+            <a class="btn btn-sm btn-outline-primary"
+               href="{{ url_for('admin_db_browser', table=table, sort=sort, dir=direction, page=page+1) }}">Next &rarr;</a>
+            {% else %}
+            <span></span>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

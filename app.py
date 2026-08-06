@@ -434,6 +434,80 @@ def admin_stats_json():
     })
 
 
+# Read-only table browser allowlist. Table and column identifiers used in
+# /admin/db queries come ONLY from this dict, never from the request.
+ADMIN_BROWSABLE_TABLES = {
+    'results': ['id', 'sailor_id', 'regatta_id', 'placement', 'boat_type', 'role',
+                'points_scored', 'division', 'team_name', 'crew_partner', 'created_at'],
+    'sailors': ['id', 'name', 'name_normalized', 'home_club', 'is_claimed',
+                'created_at', 'updated_at'],
+    'sailor_names': ['id', 'name', 'name_normalized', 'is_claimed', 'user_id',
+                     'claimed_at', 'school', 'graduation_year', 'source',
+                     'created_at', 'updated_at'],
+    'hs_results': ['id', 'sailor_name_id', 'regatta_name', 'regatta_date', 'place',
+                   'place_numeric', 'total_boats', 'position', 'division', 'school',
+                   'created_at'],
+    'college_results': ['id', 'sailor_name_id', 'regatta_name', 'regatta_date', 'place',
+                        'place_numeric', 'total_boats', 'position', 'division', 'school',
+                        'created_at'],
+    'regattas': ['id', 'name', 'location', 'start_date', 'end_date', 'fleet_type',
+                 'external_id', 'created_at'],
+    'schools': ['id', 'name', 'district', 'source', 'url_slug', 'full_url',
+                'created_at', 'updated_at'],
+    'scraper_logs': ['id', 'started_at', 'completed_at', 'status', 'regattas_scraped',
+                     'sailors_added', 'results_added', 'error_message'],
+    'scraper_log_entries': ['id', 'created_at', 'level', 'message', 'step', 'section',
+                            'season', 'source'],
+}
+
+ADMIN_DB_PAGE_SIZE = 50
+
+
+@app.route('/admin/db')
+@login_required
+def admin_db_browser():
+    """Read-only table browser: paging and column sort only, no editing"""
+    table = request.args.get('table', 'results')
+    if table not in ADMIN_BROWSABLE_TABLES:
+        abort(404)
+    columns = ADMIN_BROWSABLE_TABLES[table]
+
+    sort = request.args.get('sort', 'id')
+    if sort not in columns:
+        abort(404)
+
+    direction = request.args.get('dir', 'desc')
+    if direction not in ('asc', 'desc'):
+        abort(404)
+
+    try:
+        page = max(int(request.args.get('page', 1)), 1)
+    except ValueError:
+        abort(404)
+
+    col_sql = ', '.join(f'"{c}"' for c in columns)
+    total = db.session.execute(text(f'SELECT count(*) FROM "{table}"')).scalar() or 0
+    rows = db.session.execute(
+        text(f'SELECT {col_sql} FROM "{table}" '
+             f'ORDER BY "{sort}" {direction.upper()} NULLS LAST '
+             f'LIMIT :limit OFFSET :offset'),
+        {'limit': ADMIN_DB_PAGE_SIZE, 'offset': (page - 1) * ADMIN_DB_PAGE_SIZE}
+    ).mappings().all()
+
+    total_pages = max((total + ADMIN_DB_PAGE_SIZE - 1) // ADMIN_DB_PAGE_SIZE, 1)
+
+    return render_template('admin_db.html',
+                           tables=sorted(ADMIN_BROWSABLE_TABLES.keys()),
+                           table=table,
+                           columns=columns,
+                           rows=rows,
+                           sort=sort,
+                           direction=direction,
+                           page=page,
+                           total_pages=total_pages,
+                           total=total)
+
+
 @app.route('/admin/logs/stream')
 @login_required
 def admin_logs_stream():
