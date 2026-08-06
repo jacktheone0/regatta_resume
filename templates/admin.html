@@ -103,35 +103,54 @@
 
         <div class="col-md-4">
             <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0">Database Stats</h5>
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Live Scraper Log</h5>
+                    <span id="logStreamState" class="badge bg-secondary">connecting&hellip;</span>
                 </div>
-                <div class="card-body">
-                    <div class="stat-item mb-3">
-                        <div class="stat-label">Total Sailors</div>
-                        <div class="stat-value" id="statTotalSailors">{{ stats.total_sailors }}</div>
-                    </div>
-                    <div class="stat-item mb-3">
-                        <div class="stat-label">Total Regattas</div>
-                        <div class="stat-value" id="statTotalRegattas">{{ stats.total_regattas }}</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-label">Total Results</div>
-                        <div class="stat-value" id="statTotalResults">{{ stats.total_results }}</div>
-                    </div>
+                <div class="card-body p-2">
+                    <pre id="liveLog" class="live-log mb-0"></pre>
                 </div>
             </div>
         </div>
     </div>
 
     <!-- Quick Actions -->
-    <div class="card">
+    <div class="card mb-4">
         <div class="card-header">
             <h5 class="mb-0">Quick Actions</h5>
         </div>
         <div class="card-body">
             <a href="{{ url_for('index') }}" class="btn btn-outline-primary me-2">View Site</a>
             <a href="/api/sailors" class="btn btn-outline-secondary me-2" target="_blank">API Docs</a>
+        </div>
+    </div>
+
+    <!-- Database Stats -->
+    <div class="card">
+        <div class="card-header">
+            <h5 class="mb-0">Database Stats</h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-4">
+                    <div class="stat-item mb-3 mb-md-0">
+                        <div class="stat-label">Total Sailors</div>
+                        <div class="stat-value" id="statTotalSailors">{{ stats.total_sailors }}</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="stat-item mb-3 mb-md-0">
+                        <div class="stat-label">Total Regattas</div>
+                        <div class="stat-value" id="statTotalRegattas">{{ stats.total_regattas }}</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="stat-item">
+                        <div class="stat-label">Total Results</div>
+                        <div class="stat-value" id="statTotalResults">{{ stats.total_results }}</div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -155,6 +174,21 @@
     font-weight: bold;
     color: #0066cc;
 }
+
+.live-log {
+    height: 480px;
+    overflow-y: auto;
+    background: #101418;
+    color: #9fe89f;
+    font-size: 0.78rem;
+    padding: 0.5rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    border-radius: 0.25rem;
+}
+
+.live-log .log-warning { color: #ffd166; }
+.live-log .log-error { color: #ff6b6b; }
 </style>
 
 <script>
@@ -386,6 +420,47 @@ document.getElementById('step3ResultsBtn').addEventListener('click', async funct
         btn.innerHTML = '<i class="bi bi-3-circle"></i> Step 3: Scrape Results';
     }
 });
+
+// Live scraper log: SSE stream from /admin/logs/stream. The server closes
+// each connection after ~50s; EventSource reconnects with Last-Event-ID.
+(function () {
+    const liveLog = document.getElementById('liveLog');
+    const stateBadge = document.getElementById('logStreamState');
+    const MAX_LINES = 500;
+
+    const source = new EventSource('/admin/logs/stream');
+
+    source.onopen = () => {
+        stateBadge.className = 'badge bg-success';
+        stateBadge.textContent = 'live';
+    };
+
+    source.onerror = () => {
+        stateBadge.className = 'badge bg-warning text-dark';
+        stateBadge.textContent = 'reconnecting…';
+    };
+
+    source.onmessage = (event) => {
+        let entry;
+        try {
+            entry = JSON.parse(event.data);
+        } catch (e) {
+            return;
+        }
+
+        const line = document.createElement('div');
+        const ts = entry.ts ? new Date(entry.ts).toLocaleTimeString() : '';
+        line.textContent = (ts ? '[' + ts + '] ' : '') + entry.message;
+        if (entry.level === 'WARNING') line.className = 'log-warning';
+        if (entry.level === 'ERROR') line.className = 'log-error';
+        liveLog.appendChild(line);
+
+        while (liveLog.childElementCount > MAX_LINES) {
+            liveLog.removeChild(liveLog.firstElementChild);
+        }
+        liveLog.scrollTop = liveLog.scrollHeight;
+    };
+})();
 
 // Refresh DB stats in place every 30 seconds (no page reload)
 async function refreshStats() {

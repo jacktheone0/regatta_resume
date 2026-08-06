@@ -293,6 +293,25 @@ class ScraperLog(db.Model):
         return f'<ScraperLog {self.started_at} - {self.status}>'
 
 
+class ScraperLogEntry(db.Model):
+    """Per-line progress output from scraper runs, streamed to the admin UI"""
+    __tablename__ = 'scraper_log_entries'
+
+    id = db.Column(db.Integer, primary_key=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    level = db.Column(db.String(10))  # 'INFO', 'WARNING', 'ERROR'
+    message = db.Column(db.Text, nullable=False)
+
+    # Structured fields set only on section-completion rows; NULL on plain lines
+    step = db.Column(db.String(20))     # 'schools', 'rosters', 'results'
+    section = db.Column(db.String(20))  # 'scrape', 'store'
+    season = db.Column(db.String(10))   # e.g. 'f25'; NULL for step 1
+    source = db.Column(db.String(20))   # 'hs' or 'college'
+
+    def __repr__(self):
+        return f'<ScraperLogEntry {self.id} {self.level}>'
+
+
 class School(db.Model):
     """Schools from HS/College scrapers"""
     __tablename__ = 'schools'

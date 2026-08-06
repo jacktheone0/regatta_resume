@@ -1,15 +1,17 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, Response, stream_with_context, abort
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from flask_migrate import Migrate
 from apscheduler.schedulers.background import BackgroundScheduler
 from config import config
-from models import db, User, Sailor, Regatta, Result, ResumeLink, SailorName, HSResult, CollegeResult
+from models import db, User, Sailor, Regatta, Result, ResumeLink, SailorName, HSResult, CollegeResult, ScraperLogEntry
 from forms import LoginForm, RegisterForm, ClaimProfileForm
 from scraper import run_scraper
 from utils import generate_pdf, calculate_stats, get_performance_trends
 import os
+import json
+import time
 from datetime import datetime, timedelta
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, text
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -408,6 +410,68 @@ def admin_stats_json():
         'total_regattas': Regatta.query.count(),
         'total_results': Result.query.count()
     })
+
+
+@app.route('/admin/logs/stream')
+@login_required
+def admin_logs_stream():
+    """
+    Server-Sent Events stream of scraper_log_entries rows.
+
+    Polls the table server-side and closes after ~50s so a worker thread is
+    never held indefinitely; EventSource reconnects automatically and resumes
+    from Last-Event-ID.
+    """
+    last_id_raw = request.headers.get('Last-Event-ID') or request.args.get('after')
+    try:
+        last_id = int(last_id_raw)
+    except (TypeError, ValueError):
+        last_id = None
+
+    def generate(last_id):
+        if last_id is None:
+            # Fresh connection: start 50 lines back so the panel shows
+            # recent history instead of only lines from now on.
+            max_id = db.session.query(func.max(ScraperLogEntry.id)).scalar() or 0
+            last_id = max(0, max_id - 50)
+
+        deadline = time.monotonic() + 50
+        while time.monotonic() < deadline:
+            entries = (ScraperLogEntry.query
+                       .filter(ScraperLogEntry.id > last_id)
+                       .order_by(ScraperLogEntry.id)
+                       .limit(200)
+                       .all())
+            # End the read transaction so the next poll sees new commits
+            # and no idle transaction sits open on Neon between polls.
+            db.session.rollback()
+
+            for entry in entries:
+                last_id = entry.id
+                payload = json.dumps({
+                    'ts': entry.created_at.isoformat() + 'Z' if entry.created_at else None,
+                    'level': entry.level,
+                    'message': entry.message,
+                    'step': entry.step,
+                    'section': entry.section,
+                    'season': entry.season,
+                    'source': entry.source,
+                })
+                yield f"id: {entry.id}\ndata: {payload}\n\n"
+
+            if not entries:
+                yield ": keepalive\n\n"
+
+            time.sleep(2)
+
+    return Response(
+        stream_with_context(generate(last_id)),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        }
+    )
 
 
 # ============================================================================
