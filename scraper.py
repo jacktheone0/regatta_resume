@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import time
+from threading import Thread, Lock
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -36,9 +37,10 @@ def make_driver():
     options.add_argument("--blink-settings=imagesEnabled=false")
     options.add_argument("--disable-extensions")
     options.add_argument("--log-level=3")
-    # Memory limiters: one process, one renderer, no zygote forks,
-    # near-zero disk cache, small JS heap, modest window
-    options.add_argument("--single-process")
+    # Memory limiters: one renderer, no zygote forks, near-zero disk
+    # cache, small JS heap, modest window. NOTE: --single-process is NOT
+    # used -- it deadlocks modern headless Chrome during startup, which
+    # froze whole runs with Selenium blocked forever on the handshake.
     options.add_argument("--no-zygote")
     options.add_argument("--renderer-process-limit=1")
     options.add_argument("--disable-software-rasterizer")
@@ -50,9 +52,63 @@ def make_driver():
     chrome_bin = os.environ.get('CHROME_BIN')
     if chrome_bin:
         options.binary_location = chrome_bin
-    driver = webdriver.Chrome(options=options)
+    driver = _start_chrome_with_timeout(options, seconds=90)
     driver.set_page_load_timeout(30)
+    driver.set_script_timeout(30)
     return driver
+
+
+def _start_chrome_with_timeout(options, seconds=90):
+    """
+    Start Chrome in a helper thread so a wedged startup handshake cannot
+    block the scraper forever (Selenium has no client-side timeout).
+    """
+    holder = {}
+
+    def target():
+        try:
+            driver = webdriver.Chrome(options=options)
+            if holder.get('timed_out'):
+                # Too late to be used; don't leak the browser
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+            else:
+                holder['driver'] = driver
+        except BaseException as e:
+            holder['error'] = e
+
+    thread = Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    if thread.is_alive():
+        holder['timed_out'] = True
+        raise WebDriverException(f"Chrome did not start within {seconds}s")
+    if 'error' in holder:
+        raise holder['error']
+    return holder['driver']
+
+
+def _safe_quit(driver):
+    """quit() with a timeout; kill the chromedriver process if it hangs"""
+    if driver is None:
+        return
+
+    def target():
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+    thread = Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(15)
+    if thread.is_alive():
+        try:
+            driver.service.process.kill()
+        except Exception:
+            pass
 
 
 def container_memory_mb():
@@ -96,8 +152,8 @@ class ClubspotScraper:
     # Watchdog thresholds as fractions of the container memory limit:
     # above SOFT restart Chrome to reclaim memory, above HARD stop the run
     # cleanly before the kernel OOM-kills the whole web service
-    MEMORY_SOFT_FRACTION = 0.75
-    MEMORY_HARD_FRACTION = 0.85
+    MEMORY_SOFT_FRACTION = 0.78
+    MEMORY_HARD_FRACTION = 0.88
 
     # Chrome accumulates memory across page loads; restart it periodically
     RESTART_DRIVER_EVERY = 20
@@ -115,10 +171,7 @@ class ClubspotScraper:
         return 'ok', used, limit
 
     def _restart_driver(self, driver):
-        try:
-            driver.quit()
-        except Exception:
-            pass
+        _safe_quit(driver)
         gc.collect()
         return make_driver()
 
@@ -224,12 +277,20 @@ class ClubspotScraper:
             limit: Maximum number of regattas to scrape
             start_year: Only scrape regattas from this year onwards (default: 2024)
         """
+        # A crashed or hung run leaves its row 'running' forever; mark such
+        # rows failed so they can't confuse stop requests or the admin UI
+        stale = ScraperLog.query.filter_by(status='running').update(
+            {'status': 'failed', 'error_message': 'Stale run superseded by a newer run'},
+            synchronize_session=False
+        )
         log = ScraperLog(status='running')
         db.session.add(log)
         db.session.commit()
         self.log_id = log.id
 
         attach_db_log_handler(logger)
+        if stale:
+            logger.warning(f"Marked {stale} stale 'running' scraper log(s) as failed")
 
         try:
             logger.info("Starting scraper...")
@@ -251,10 +312,15 @@ class ClubspotScraper:
                 .filter(Regatta.external_id.isnot(None))
                 .distinct()
             }
-            if already_scraped:
-                logger.info(f"{len(already_scraped)} regattas already have results and will be skipped")
-
-            logger.info(f"Found {len(regattas_data)} regattas to scrape")
+            # Filter upfront instead of skipping inside the loop: the loop
+            # previously ran a stop-check DB query per skipped regatta,
+            # thousands of silent queries before any visible progress
+            total_listed = len(regattas_data)
+            regattas_data = [r for r in regattas_data
+                             if r.get('objectId') not in already_scraped]
+            skipped = total_listed - len(regattas_data)
+            logger.info(f"{skipped} of {total_listed} regattas already have results; "
+                        f"{len(regattas_data)} left to scrape")
 
             used_mb, limit_mb = container_memory_mb()
             if used_mb is not None and limit_mb:
@@ -267,6 +333,7 @@ class ClubspotScraper:
             # Fail fast if Chrome can't start (e.g. not installed on this
             # host): every regatta needs it, and swallowing the error
             # per-regatta would burn hours writing regattas with no results.
+            logger.info("Starting headless Chrome...")
             try:
                 driver = make_driver()
             except WebDriverException as e:
@@ -274,8 +341,8 @@ class ClubspotScraper:
                     f"Could not start Chrome for results scraping "
                     f"(is Chrome installed on this host?): {e}"
                 ) from e
+            logger.info("Chrome started")
 
-            skipped = 0
             scraped_since_restart = 0
             stopped_early = None
             try:
@@ -294,19 +361,17 @@ class ClubspotScraper:
                     regatta_id = regatta_data.get('objectId')
                     regatta_name = regatta_data.get('name', 'Unknown')
 
-                    if regatta_id in already_scraped:
-                        skipped += 1
-                        continue
-
                     if max_per_run and self.stats['regattas_scraped'] >= max_per_run:
                         stopped_early = f"Reached the per-run cap of {max_per_run} regattas"
                         break
 
                     # Memory watchdog: restart Chrome above the soft
                     # threshold, stop the run above the hard threshold --
-                    # never let the container hit its cap and get OOM-killed
+                    # never let the container hit its cap and get OOM-killed.
+                    # The >=3 guard avoids restart thrash when a freshly
+                    # started Chrome already sits near the threshold.
                     state, used_mb, limit_mb = self._memory_state()
-                    if state != 'ok':
+                    if state != 'ok' and scraped_since_restart >= 3:
                         logger.warning(
                             f"Memory at {used_mb:.0f}MB of {limit_mb:.0f}MB -- "
                             f"restarting Chrome to reclaim memory"
@@ -314,13 +379,13 @@ class ClubspotScraper:
                         driver = self._restart_driver(driver)
                         scraped_since_restart = 0
                         state, used_mb, limit_mb = self._memory_state()
-                        if state == 'critical':
-                            stopped_early = (
-                                f"Stopped to stay under the memory cap "
-                                f"({used_mb:.0f}MB used of {limit_mb:.0f}MB "
-                                f"after a Chrome restart)"
-                            )
-                            break
+                    if state == 'critical':
+                        stopped_early = (
+                            f"Stopped to stay under the memory cap "
+                            f"({used_mb:.0f}MB used of {limit_mb:.0f}MB "
+                            f"with a fresh Chrome)"
+                        )
+                        break
 
                     logger.info(f"[{idx}/{len(regattas_data)}] Scraping: {regatta_name} ({regatta_id})")
 
@@ -353,10 +418,7 @@ class ClubspotScraper:
                         logger.error(f"Error scraping {regatta_id}: {e}")
                         continue
             finally:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
+                _safe_quit(driver)
                 gc.collect()
 
             log.status = 'completed'
@@ -687,6 +749,11 @@ return Array.from(out);
         return int(match.group(1)) if match else None
 
 
+# One scraper at a time: a second concurrent run would double Chrome's
+# memory footprint and fight over the same regattas
+_run_lock = Lock()
+
+
 def run_scraper(limit=None, start_year=2024):
     """
     Convenience function to run the scraper
@@ -695,8 +762,14 @@ def run_scraper(limit=None, start_year=2024):
         limit: Max regattas to scrape (default: all available)
         start_year: Only scrape regattas from this year onwards (default: 2024)
     """
-    scraper = ClubspotScraper()
-    return scraper.scrape_all_regattas(limit=limit, start_year=start_year)
+    if not _run_lock.acquire(blocking=False):
+        logger.warning("Scraper is already running in this process; not starting another")
+        return {'skipped': 'already running'}
+    try:
+        scraper = ClubspotScraper()
+        return scraper.scrape_all_regattas(limit=limit, start_year=start_year)
+    finally:
+        _run_lock.release()
 
 
 def stop_scraper():
