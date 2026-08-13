@@ -331,25 +331,40 @@ def coach_view(sailor_id):
     months_back = int(request.args.get('months', 6))  # Default: 6 months
     cutoff_date = datetime.utcnow().date() - timedelta(days=months_back * 30)
 
+    # Boat-class filter: only accept classes this sailor has actually raced
+    boat_types = [b[0] for b in db.session.query(Result.boat_type).filter(
+        Result.sailor_id == sailor_id,
+        Result.boat_type.isnot(None)
+    ).distinct().order_by(Result.boat_type).all()]
+
+    boat_filter = request.args.get('boat', '').strip() or None
+    if boat_filter and boat_filter not in boat_types:
+        boat_filter = None
+
     # Get recent vs historical results
-    recent_results = db.session.query(Result, Regatta).join(
+    recent_query = db.session.query(Result, Regatta).join(
         Regatta, Result.regatta_id == Regatta.id
     ).filter(
         Result.sailor_id == sailor_id,
         Regatta.start_date >= cutoff_date
-    ).order_by(desc(Regatta.start_date)).all()
-
-    historical_results = db.session.query(Result, Regatta).join(
+    )
+    historical_query = db.session.query(Result, Regatta).join(
         Regatta, Result.regatta_id == Regatta.id
     ).filter(
         Result.sailor_id == sailor_id,
         Regatta.start_date < cutoff_date
-    ).order_by(desc(Regatta.start_date)).all()
+    )
+    if boat_filter:
+        recent_query = recent_query.filter(Result.boat_type == boat_filter)
+        historical_query = historical_query.filter(Result.boat_type == boat_filter)
+
+    recent_results = recent_query.order_by(desc(Regatta.start_date)).all()
+    historical_results = historical_query.order_by(desc(Regatta.start_date)).all()
 
     # Calculate performance trends
-    trends = get_performance_trends(sailor_id, months_back)
+    trends = get_performance_trends(sailor_id, months_back, boat_type=boat_filter)
 
-    # Get fleet breakdown
+    # Get fleet breakdown (always across all classes, for comparison)
     fleet_stats = db.session.query(
         Result.boat_type,
         func.count(Result.id).label('count'),
@@ -365,7 +380,9 @@ def coach_view(sailor_id):
                          historical_results=historical_results,
                          trends=trends,
                          fleet_stats=fleet_stats,
-                         months_back=months_back)
+                         months_back=months_back,
+                         boat_types=boat_types,
+                         boat_filter=boat_filter)
 
 
 @app.route('/resume/<token>')

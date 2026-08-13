@@ -30,8 +30,21 @@
                         <option value="24" {% if months_back == 24 %}selected{% endif %}>Last 2 years</option>
                     </select>
                 </div>
+                {% if boat_types %}
                 <div class="col-auto">
-                    <span class="text-muted">vs. historical performance</span>
+                    <label class="col-form-label">Boat class:</label>
+                </div>
+                <div class="col-auto">
+                    <select name="boat" class="form-select" onchange="this.form.submit()">
+                        <option value="">All classes</option>
+                        {% for boat in boat_types %}
+                        <option value="{{ boat }}" {% if boat_filter == boat %}selected{% endif %}>{{ boat }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                {% endif %}
+                <div class="col-auto">
+                    <span class="text-muted">vs. historical performance{% if boat_filter %} in {{ boat_filter }}{% endif %}</span>
                 </div>
             </form>
         </div>

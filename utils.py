@@ -101,24 +101,29 @@ def calculate_stats(sailor):
     }
 
 
-def get_performance_trends(sailor_id, months_back=6):
+def get_performance_trends(sailor_id, months_back=6, boat_type=None):
     """
     Calculate performance trends for coach view
 
     Args:
         sailor_id: ID of the sailor
         months_back: How many months to consider as "recent"
+        boat_type: Optional boat class to restrict the analysis to
 
     Returns:
         dict with trend analysis
     """
     cutoff_date = datetime.utcnow().date() - timedelta(days=months_back * 30)
 
+    conditions = [Result.sailor_id == sailor_id]
+    if boat_type:
+        conditions.append(Result.boat_type == boat_type)
+
     # Recent average placement
     recent_avg = db.session.query(
         func.avg(Result.placement)
     ).join(Regatta).filter(
-        Result.sailor_id == sailor_id,
+        *conditions,
         Regatta.start_date >= cutoff_date
     ).scalar()
 
@@ -126,7 +131,7 @@ def get_performance_trends(sailor_id, months_back=6):
     historical_avg = db.session.query(
         func.avg(Result.placement)
     ).join(Regatta).filter(
-        Result.sailor_id == sailor_id,
+        *conditions,
         Regatta.start_date < cutoff_date
     ).scalar()
 
@@ -140,7 +145,7 @@ def get_performance_trends(sailor_id, months_back=6):
     recent_top_3 = db.session.query(
         func.count(Result.id)
     ).join(Regatta).filter(
-        Result.sailor_id == sailor_id,
+        *conditions,
         Regatta.start_date >= cutoff_date,
         Result.placement <= 3
     ).scalar() or 0
@@ -151,7 +156,7 @@ def get_performance_trends(sailor_id, months_back=6):
         Result.placement,
         Regatta.name
     ).join(Result).filter(
-        Result.sailor_id == sailor_id,
+        *conditions,
         Regatta.start_date >= cutoff_date
     ).order_by(Regatta.start_date).all()
 
