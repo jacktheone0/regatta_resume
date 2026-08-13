@@ -5,7 +5,9 @@ Uses Parse API to fetch all regatta IDs, then Selenium to scrape results
 import requests
 from datetime import datetime, timezone
 from models import db, Sailor, Regatta, Result, ScraperLog
+from scraper_logging import attach_db_log_handler
 import logging
+import os
 import re
 import time
 from selenium import webdriver
@@ -30,6 +32,9 @@ def make_driver():
     options.add_argument("--disable-extensions")
     options.add_argument("--log-level=3")
     options.page_load_strategy = "eager"
+    chrome_bin = os.environ.get('CHROME_BIN')
+    if chrome_bin:
+        options.binary_location = chrome_bin
     driver = webdriver.Chrome(options=options)
     driver.set_page_load_timeout(30)
     return driver
@@ -145,6 +150,8 @@ class ClubspotScraper:
         db.session.commit()
         self.log_id = log.id
 
+        attach_db_log_handler(logger)
+
         try:
             logger.info("Starting scraper...")
 
@@ -158,39 +165,79 @@ class ClubspotScraper:
                 db.session.commit()
                 return self.stats
 
+            # Regattas that already have stored results don't need re-scraping
+            already_scraped = {
+                ext_id for (ext_id,) in db.session.query(Regatta.external_id)
+                .join(Result, Result.regatta_id == Regatta.id)
+                .filter(Regatta.external_id.isnot(None))
+                .distinct()
+            }
+            if already_scraped:
+                logger.info(f"{len(already_scraped)} regattas already have results and will be skipped")
+
             logger.info(f"Found {len(regattas_data)} regattas to scrape")
 
-            for idx, regatta_data in enumerate(regattas_data, 1):
-                # Check if user requested stop
-                if self.should_stop():
-                    log.status = 'cancelled'
-                    log.completed_at = datetime.utcnow()
-                    log.regattas_scraped = self.stats['regattas_scraped']
-                    log.sailors_added = self.stats['sailors_added']
-                    log.results_added = self.stats['results_added']
-                    db.session.commit()
-                    logger.info(f"Scraper cancelled by user after {idx-1} regattas")
-                    return self.stats
+            # Fail fast if Chrome can't start (e.g. not installed on this
+            # host): every regatta needs it, and swallowing the error
+            # per-regatta would burn hours writing regattas with no results.
+            try:
+                driver = make_driver()
+            except WebDriverException as e:
+                raise RuntimeError(
+                    f"Could not start Chrome for results scraping "
+                    f"(is Chrome installed on this host?): {e}"
+                ) from e
 
-                regatta_id = regatta_data.get('objectId')
-                regatta_name = regatta_data.get('name', 'Unknown')
-                logger.info(f"[{idx}/{len(regattas_data)}] Scraping: {regatta_name} ({regatta_id})")
-
-                try:
-                    self._scrape_regatta(regatta_id, regatta_data)
-                    self.stats['regattas_scraped'] += 1
-
-                    # Update progress in database periodically
-                    if idx % 10 == 0:
+            skipped = 0
+            try:
+                for idx, regatta_data in enumerate(regattas_data, 1):
+                    # Check if user requested stop
+                    if self.should_stop():
+                        log.status = 'cancelled'
+                        log.completed_at = datetime.utcnow()
                         log.regattas_scraped = self.stats['regattas_scraped']
                         log.sailors_added = self.stats['sailors_added']
                         log.results_added = self.stats['results_added']
                         db.session.commit()
+                        logger.info(f"Scraper cancelled by user after {idx-1} regattas")
+                        return self.stats
 
-                    time.sleep(2)  # Be polite, don't hammer the server
-                except Exception as e:
-                    logger.error(f"Error scraping {regatta_id}: {e}")
-                    continue
+                    regatta_id = regatta_data.get('objectId')
+                    regatta_name = regatta_data.get('name', 'Unknown')
+
+                    if regatta_id in already_scraped:
+                        skipped += 1
+                        continue
+
+                    logger.info(f"[{idx}/{len(regattas_data)}] Scraping: {regatta_name} ({regatta_id})")
+
+                    try:
+                        self._scrape_regatta(regatta_id, regatta_data, driver)
+                        self.stats['regattas_scraped'] += 1
+
+                        # Update progress in database periodically
+                        if idx % 10 == 0:
+                            log.regattas_scraped = self.stats['regattas_scraped']
+                            log.sailors_added = self.stats['sailors_added']
+                            log.results_added = self.stats['results_added']
+                            db.session.commit()
+
+                        time.sleep(2)  # Be polite, don't hammer the server
+                    except WebDriverException as e:
+                        logger.warning(f"Chrome session lost while scraping {regatta_id}: {e}; restarting browser")
+                        try:
+                            driver.quit()
+                        except Exception:
+                            pass
+                        driver = make_driver()  # if this raises, the run fails loudly
+                    except Exception as e:
+                        logger.error(f"Error scraping {regatta_id}: {e}")
+                        continue
+            finally:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
 
             log.status = 'completed'
             log.completed_at = datetime.utcnow()
@@ -199,7 +246,7 @@ class ClubspotScraper:
             log.results_added = self.stats['results_added']
             db.session.commit()
 
-            logger.info(f"Scraping complete! Stats: {self.stats}")
+            logger.info(f"Scraping complete! Skipped {skipped} already-scraped regattas. Stats: {self.stats}")
             return self.stats
 
         except Exception as e:
@@ -210,13 +257,14 @@ class ClubspotScraper:
             logger.error(f"Scraper failed: {e}")
             raise
 
-    def _scrape_regatta(self, regatta_id, api_data=None):
+    def _scrape_regatta(self, regatta_id, api_data=None, driver=None):
         """
         Scrape a single regatta by ID using Selenium
 
         Args:
             regatta_id: The clubspot regatta ID
             api_data: Optional dict with regatta metadata from Parse API
+            driver: Shared Selenium driver (reused across regattas)
         """
         url = f"https://theclubspot.com/regatta/{regatta_id}"
 
@@ -236,7 +284,7 @@ class ClubspotScraper:
 
             # Now scrape results using Selenium
             results_url = f"{url}/results?list_view=true"
-            results_data = self._scrape_results_with_selenium(results_url, regatta.id)
+            results_data = self._scrape_results_with_selenium(results_url, regatta.id, driver)
 
             # Save results to database
             for result_data in results_data:
@@ -246,7 +294,7 @@ class ClubspotScraper:
             logger.error(f"Error in _scrape_regatta for {regatta_id}: {e}")
             raise
 
-    def _scrape_results_with_selenium(self, results_url, regatta_id, timeout=12):
+    def _scrape_results_with_selenium(self, results_url, regatta_id, driver, timeout=12):
         """
         Scrape results page using Selenium to handle JavaScript rendering
         Based on user's proven scraping logic
@@ -254,36 +302,35 @@ class ClubspotScraper:
         Args:
             results_url: URL of the results page
             regatta_id: Database ID of the regatta
+            driver: Shared Selenium driver (owned by the caller; WebDriver
+                    errors propagate so the caller can restart the browser)
             timeout: Seconds to wait for page to load
 
         Returns:
             List of result dicts with sailor names and placements
         """
-        driver = None
         results = []
 
+        driver.get(results_url)
+
+        # Wait for any table rows to appear
+        def any_rows_present(d):
+            # Classic table rows with TDs
+            if d.find_elements(By.CSS_SELECTOR, "table tbody tr td"):
+                return True
+            # Virtualized/data-grid rows
+            if d.find_elements(By.CSS_SELECTOR, "[role='row'] [role='gridcell'], .ag-row .ag-cell"):
+                return True
+            return False
+
         try:
-            driver = make_driver()
-            driver.get(results_url)
+            WebDriverWait(driver, timeout).until(any_rows_present)
+        except TimeoutException:
+            logger.warning(f"Timeout waiting for results table at {results_url}")
+            return []
 
-            # Wait for any table rows to appear
-            def any_rows_present(d):
-                # Classic table rows with TDs
-                if d.find_elements(By.CSS_SELECTOR, "table tbody tr td"):
-                    return True
-                # Virtualized/data-grid rows
-                if d.find_elements(By.CSS_SELECTOR, "[role='row'] [role='gridcell'], .ag-row .ag-cell"):
-                    return True
-                return False
-
-            try:
-                WebDriverWait(driver, timeout).until(any_rows_present)
-            except TimeoutException:
-                logger.warning(f"Timeout waiting for results table at {results_url}")
-                return []
-
-            # JavaScript to extract all data rows (excluding headers)
-            HARVEST_JS = r"""
+        # JavaScript to extract all data rows (excluding headers)
+        HARVEST_JS = r"""
 const out = new Set();
 
 // 1) Classic tables: only rows in <tbody> that have at least one <td>
@@ -318,29 +365,22 @@ document.querySelectorAll(".ag-row").forEach(row => {
 return Array.from(out);
 """
 
-            # Scroll to load lazy content
-            for _ in range(8):
-                driver.execute_script("window.scrollBy(0, Math.max(600, window.innerHeight));")
-                time.sleep(0.2)
+        # Scroll to load lazy content
+        for _ in range(8):
+            driver.execute_script("window.scrollBy(0, Math.max(600, window.innerHeight));")
+            time.sleep(0.2)
 
-            # Extract all row data
-            rows_text = driver.execute_script(HARVEST_JS) or []
+        # Extract all row data
+        rows_text = driver.execute_script(HARVEST_JS) or []
 
-            # Parse each row to extract sailor name and placement
-            for row_text in rows_text:
-                result_data = self._parse_result_row(row_text)
-                if result_data:
-                    results.append(result_data)
+        # Parse each row to extract sailor name and placement
+        for row_text in rows_text:
+            result_data = self._parse_result_row(row_text)
+            if result_data:
+                results.append(result_data)
 
-            logger.info(f"Extracted {len(results)} results from {results_url}")
-            return results
-
-        except Exception as e:
-            logger.error(f"Error scraping results with Selenium: {e}")
-            return []
-        finally:
-            if driver:
-                driver.quit()
+        logger.info(f"Extracted {len(results)} results from {results_url}")
+        return results
 
     def _parse_result_row(self, row_text):
         """
@@ -380,7 +420,8 @@ return Array.from(out);
 
             result_data = {
                 'placement': placement,
-                'sailor_name': sailor_name
+                'sailor_name': sailor_name,
+                'raw_row_data': row_text
             }
 
             # Try to extract points (usually last column)
@@ -465,7 +506,8 @@ return Array.from(out);
             role=result_data.get('role'),
             points_scored=result_data.get('points_scored'),
             division=result_data.get('division'),
-            team_name=result_data.get('team_name')
+            team_name=result_data.get('team_name'),
+            raw_row_data=result_data.get('raw_row_data')
         )
 
         db.session.add(result)

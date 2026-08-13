@@ -15,58 +15,15 @@ import scraper_v2
 # Import database models
 from models import db, SailorName, HSResult, CollegeResult, School
 
-from sqlalchemy import text
+from scraper_logging import db_log as _db_log, attach_db_log_handler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def _db_log(message, level='INFO', step=None, section=None, season=None, source=None):
-    """
-    Insert one scraper_log_entries row on a pooled engine connection.
-    Deliberately independent of db.session, which the scraper commits in
-    10-row batches mid-run and must not be flushed or rolled back here.
-    """
-    try:
-        with db.engine.begin() as conn:
-            conn.execute(
-                text(
-                    "INSERT INTO scraper_log_entries "
-                    "(created_at, level, message, step, section, season, source) "
-                    "VALUES (:created_at, :level, :message, :step, :section, :season, :source)"
-                ),
-                {
-                    'created_at': datetime.utcnow(),
-                    'level': level,
-                    'message': message,
-                    'step': step,
-                    'section': section,
-                    'season': season,
-                    'source': source,
-                }
-            )
-    except Exception:
-        # Never let log persistence break a scrape, and never re-enter the
-        # logger from here (the DB handler below would recurse).
-        pass
-
-
-class _DBLogHandler(logging.Handler):
-    """Mirrors this module's log records into scraper_log_entries."""
-
-    def emit(self, record):
-        _db_log(record.getMessage(), level=record.levelname)
-
-
-_db_handler_attached = False
-
-
 def _attach_db_log_handler():
-    """Attach the DB handler once; call from inside an app context."""
-    global _db_handler_attached
-    if not _db_handler_attached:
-        logger.addHandler(_DBLogHandler())
-        _db_handler_attached = True
+    """Attach the shared DB handler once; call from inside an app context."""
+    attach_db_log_handler(logger)
 
 
 def store_schools_in_db(schools_df: pd.DataFrame, source_type: str):
