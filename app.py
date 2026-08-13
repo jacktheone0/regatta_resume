@@ -124,12 +124,18 @@ def search():
     if not query:
         return jsonify([])
 
+    # Match each word independently so "John Smith" still finds
+    # "John A. Smith" or "Smith, John" (a contiguous-substring match
+    # made results vanish once the full name was typed).
+    tokens = [t for t in query.lower().split() if t]
+
     results = []
 
     # Search in Sailor table (ClubSpot data)
-    sailors = Sailor.query.filter(
-        Sailor.name_normalized.contains(query.lower())
-    ).limit(10).all()
+    sailor_query = Sailor.query
+    for token in tokens:
+        sailor_query = sailor_query.filter(Sailor.name_normalized.contains(token))
+    sailors = sailor_query.limit(10).all()
 
     for s in sailors:
         results.append({
@@ -143,26 +149,32 @@ def search():
         })
 
     # Search in SailorName table (HS/College data)
-    sailor_names = SailorName.query.filter(
-        SailorName.name_normalized.contains(query.lower())
-    ).limit(10).all()
+    sn_query = SailorName.query
+    for token in tokens:
+        sn_query = sn_query.filter(SailorName.name_normalized.contains(token))
+    sailor_names = sn_query.limit(10).all()
+
+    # Aggregate counts/best finishes in two grouped queries instead of
+    # four queries per matched sailor
+    sn_ids = [sn.id for sn in sailor_names]
+    hs_stats, college_stats = {}, {}
+    if sn_ids:
+        hs_stats = {row[0]: (row[1], row[2]) for row in db.session.query(
+            HSResult.sailor_name_id, func.count(HSResult.id), func.min(HSResult.place_numeric)
+        ).filter(HSResult.sailor_name_id.in_(sn_ids)).group_by(HSResult.sailor_name_id).all()}
+        college_stats = {row[0]: (row[1], row[2]) for row in db.session.query(
+            CollegeResult.sailor_name_id, func.count(CollegeResult.id), func.min(CollegeResult.place_numeric)
+        ).filter(CollegeResult.sailor_name_id.in_(sn_ids)).group_by(CollegeResult.sailor_name_id).all()}
 
     for sn in sailor_names:
-        # Count total results
-        hs_count = HSResult.query.filter_by(sailor_name_id=sn.id).count()
-        college_count = CollegeResult.query.filter_by(sailor_name_id=sn.id).count()
+        hs_count, best_hs = hs_stats.get(sn.id, (0, None))
+        college_count, best_college = college_stats.get(sn.id, (0, None))
         total_results = hs_count + college_count
 
-        # Get best finish
-        best_hs = db.session.query(db.func.min(HSResult.place_numeric)).filter_by(sailor_name_id=sn.id).scalar()
-        best_college = db.session.query(db.func.min(CollegeResult.place_numeric)).filter_by(sailor_name_id=sn.id).scalar()
-        best_finish = None
-        if best_hs and best_college:
-            best_finish = min(best_hs, best_college)
-        elif best_hs:
-            best_finish = best_hs
-        elif best_college:
-            best_finish = best_college
+        best_finish = min(
+            (b for b in (best_hs, best_college) if b is not None),
+            default=None
+        )
 
         source_label = sn.source.upper() if sn.source != 'both' else 'HS/College'
 

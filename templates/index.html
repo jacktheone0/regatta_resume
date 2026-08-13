@@ -224,6 +224,55 @@
 const searchInput = document.getElementById('sailorSearch');
 const searchResults = document.getElementById('searchResults');
 let searchTimeout;
+let activeController = null;
+let requestSeq = 0;
+
+function renderResults(sailors, query) {
+    searchResults.innerHTML = '';
+
+    if (sailors.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'search-result-item text-muted';
+        empty.textContent = `No sailors found for “${query}”`;
+        searchResults.appendChild(empty);
+        return;
+    }
+
+    for (const sailor of sailors) {
+        // Build with DOM APIs + textContent: names come from scraped
+        // sites and must never be injected as HTML
+        const item = document.createElement('a');
+        item.href = sailor.url;
+        item.className = 'search-result-item';
+
+        const name = document.createElement('strong');
+        name.textContent = sailor.name;
+        item.appendChild(name);
+
+        if (sailor.source && sailor.source !== 'clubspot') {
+            const badge = document.createElement('span');
+            badge.className = 'badge bg-primary ms-2';
+            badge.textContent = sailor.source;
+            item.appendChild(badge);
+        }
+
+        if (sailor.home_club) {
+            item.appendChild(document.createElement('br'));
+            const club = document.createElement('small');
+            club.className = 'text-muted';
+            club.textContent = sailor.home_club;
+            item.appendChild(club);
+        }
+
+        item.appendChild(document.createElement('br'));
+        const meta = document.createElement('small');
+        meta.textContent = `${sailor.total_regattas} regattas` +
+            (sailor.best_finish ? ` | Best: ${sailor.best_finish}` : '');
+        item.appendChild(meta);
+
+        searchResults.appendChild(item);
+    }
+}
 
 searchInput.addEventListener('input', function() {
     clearTimeout(searchTimeout);
@@ -231,28 +280,50 @@ searchInput.addEventListener('input', function() {
 
     if (query.length < 2) {
         searchResults.style.display = 'none';
+        searchResults.innerHTML = '';
         return;
     }
 
-    searchTimeout = setTimeout(() => {
-        fetch(`/search?q=${encodeURIComponent(query)}`)
-            .then(res => res.json())
-            .then(sailors => {
-                if (sailors.length === 0) {
-                    searchResults.innerHTML = '<div class="search-result-item">No sailors found</div>';
-                } else {
-                    searchResults.innerHTML = sailors.map(sailor => `
-                        <a href="${sailor.url}" class="search-result-item">
-                            <strong>${sailor.name}</strong>
-                            ${sailor.source && sailor.source !== 'clubspot' ? `<span class="badge bg-primary ms-2">${sailor.source}</span>` : ''}
-                            ${sailor.home_club ? `<br><small class="text-muted">${sailor.home_club}</small>` : ''}
-                            <br><small>${sailor.total_regattas} regattas${sailor.best_finish ? ` | Best: ${sailor.best_finish}` : ''}</small>
-                        </a>
-                    `).join('');
-                }
-                searchResults.style.display = 'block';
+    searchTimeout = setTimeout(async () => {
+        // Cancel the in-flight request and ignore any stale response, so a
+        // slow response for an old prefix can't overwrite newer results
+        if (activeController) activeController.abort();
+        activeController = new AbortController();
+        const seq = ++requestSeq;
+
+        if (!searchResults.innerHTML) {
+            const searching = document.createElement('div');
+            searching.className = 'search-result-item text-muted';
+            searching.textContent = 'Searching…';
+            searchResults.appendChild(searching);
+        }
+        searchResults.style.display = 'block';
+
+        try {
+            const res = await fetch(`/search?q=${encodeURIComponent(query)}`, {
+                signal: activeController.signal
             });
-    }, 300);
+            const sailors = await res.json();
+            if (seq !== requestSeq) return;
+            renderResults(sailors, query);
+            searchResults.style.display = 'block';
+        } catch (err) {
+            if (err.name === 'AbortError') return;
+            if (seq !== requestSeq) return;
+            searchResults.innerHTML = '';
+            const failed = document.createElement('div');
+            failed.className = 'search-result-item text-muted';
+            failed.textContent = 'Search failed — try again';
+            searchResults.appendChild(failed);
+        }
+    }, 250);
+});
+
+// Re-open existing results when the input regains focus
+searchInput.addEventListener('focus', function() {
+    if (searchResults.innerHTML && this.value.trim().length >= 2) {
+        searchResults.style.display = 'block';
+    }
 });
 
 // Hide results when clicking outside
