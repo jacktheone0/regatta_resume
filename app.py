@@ -11,6 +11,7 @@ import os
 import json
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from sqlalchemy import desc, func, text
 
 # Initialize Flask app
@@ -36,7 +37,7 @@ def load_user(user_id):
 
 
 # ============================================================================
-# SCHEDULER SETUP - Scraper runs every Sunday at 11:59 PM
+# SCHEDULER SETUP - Scraper runs every Sunday at 10:00 PM Pacific
 # ============================================================================
 
 def scheduled_scraper_job():
@@ -51,17 +52,18 @@ def scheduled_scraper_job():
 
 if app.config['SCRAPER_ENABLED']:
     scheduler = BackgroundScheduler(timezone=app.config['SCHEDULER_TIMEZONE'])
-    # Run every Sunday at 23:59 (11:59 PM)
+    # Run every Sunday at 22:00 America/Los_Angeles (DST-aware)
     scheduler.add_job(
         scheduled_scraper_job,
         'cron',
         day_of_week='sun',
-        hour=23,
-        minute=59,
+        hour=22,
+        minute=0,
+        timezone=ZoneInfo('America/Los_Angeles'),
         id='weekly_scraper'
     )
     scheduler.start()
-    app.logger.info("Scheduler started: Scraper will run every Sunday at 11:59 PM")
+    app.logger.info("Scheduler started: Scraper will run every Sunday at 10:00 PM Pacific")
 
 
 # ============================================================================
