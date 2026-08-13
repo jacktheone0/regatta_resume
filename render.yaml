@@ -22,6 +22,10 @@ services:
         value: true
       - key: SCRAPER_ENABLED
         value: true
+      - key: MEMORY_LIMIT_MB
+        value: 512
+      - key: SCRAPER_MAX_REGATTAS_PER_RUN
+        value: 300
 
 databases:
   - name: regattaresume-db

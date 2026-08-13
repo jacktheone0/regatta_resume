@@ -6,6 +6,7 @@ import requests
 from datetime import datetime, timezone
 from models import db, Sailor, Regatta, Result, ScraperLog
 from scraper_logging import attach_db_log_handler
+import gc
 import logging
 import os
 import re
@@ -22,7 +23,11 @@ logger = logging.getLogger(__name__)
 
 
 def make_driver():
-    """Create a headless Chrome driver optimized for speed"""
+    """
+    Create a headless Chrome driver with a minimal memory footprint.
+    The scraper shares a 512MB container with gunicorn, so Chrome runs as a
+    single process with one renderer and a capped JS heap.
+    """
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
@@ -31,6 +36,16 @@ def make_driver():
     options.add_argument("--blink-settings=imagesEnabled=false")
     options.add_argument("--disable-extensions")
     options.add_argument("--log-level=3")
+    # Memory limiters: one process, one renderer, no zygote forks,
+    # near-zero disk cache, small JS heap, modest window
+    options.add_argument("--single-process")
+    options.add_argument("--no-zygote")
+    options.add_argument("--renderer-process-limit=1")
+    options.add_argument("--disable-software-rasterizer")
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disk-cache-size=1048576")
+    options.add_argument("--js-flags=--max-old-space-size=128")
+    options.add_argument("--window-size=1280,720")
     options.page_load_strategy = "eager"
     chrome_bin = os.environ.get('CHROME_BIN')
     if chrome_bin:
@@ -40,8 +55,72 @@ def make_driver():
     return driver
 
 
+def container_memory_mb():
+    """
+    (used_mb, limit_mb) for this container from cgroups; MEMORY_LIMIT_MB env
+    overrides the limit. Either value is None when unavailable.
+    """
+    used = limit = None
+    try:
+        # cgroup v2
+        with open('/sys/fs/cgroup/memory.current') as f:
+            used = int(f.read()) / (1024 * 1024)
+        with open('/sys/fs/cgroup/memory.max') as f:
+            raw = f.read().strip()
+            limit = None if raw == 'max' else int(raw) / (1024 * 1024)
+    except (OSError, ValueError):
+        try:
+            # cgroup v1
+            with open('/sys/fs/cgroup/memory/memory.usage_in_bytes') as f:
+                used = int(f.read()) / (1024 * 1024)
+            with open('/sys/fs/cgroup/memory/memory.limit_in_bytes') as f:
+                raw_limit = int(f.read())
+                # Huge values mean "no limit set"
+                limit = None if raw_limit >= (1 << 60) else raw_limit / (1024 * 1024)
+        except (OSError, ValueError):
+            pass
+
+    env_limit = os.environ.get('MEMORY_LIMIT_MB')
+    if env_limit:
+        try:
+            limit = float(env_limit)
+        except ValueError:
+            pass
+
+    return used, limit
+
+
 class ClubspotScraper:
     """Scraper for theclubspot.com regatta results"""
+
+    # Watchdog thresholds as fractions of the container memory limit:
+    # above SOFT restart Chrome to reclaim memory, above HARD stop the run
+    # cleanly before the kernel OOM-kills the whole web service
+    MEMORY_SOFT_FRACTION = 0.75
+    MEMORY_HARD_FRACTION = 0.85
+
+    # Chrome accumulates memory across page loads; restart it periodically
+    RESTART_DRIVER_EVERY = 20
+
+    def _memory_state(self):
+        """('ok'|'high'|'critical', used_mb, limit_mb); 'ok' when unknown"""
+        used, limit = container_memory_mb()
+        if used is None or limit is None or limit <= 0:
+            return 'ok', used, limit
+        fraction = used / limit
+        if fraction >= self.MEMORY_HARD_FRACTION:
+            return 'critical', used, limit
+        if fraction >= self.MEMORY_SOFT_FRACTION:
+            return 'high', used, limit
+        return 'ok', used, limit
+
+    def _restart_driver(self, driver):
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        gc.collect()
+        return make_driver()
 
     def __init__(self, log_id=None):
         self.session = requests.Session()
@@ -177,6 +256,14 @@ class ClubspotScraper:
 
             logger.info(f"Found {len(regattas_data)} regattas to scrape")
 
+            used_mb, limit_mb = container_memory_mb()
+            if used_mb is not None and limit_mb:
+                logger.info(f"Memory at start: {used_mb:.0f}MB used of {limit_mb:.0f}MB limit")
+
+            # Bound each run; skipped-regatta logic makes the next run
+            # continue where this one stopped
+            max_per_run = int(os.environ.get('SCRAPER_MAX_REGATTAS_PER_RUN', '300'))
+
             # Fail fast if Chrome can't start (e.g. not installed on this
             # host): every regatta needs it, and swallowing the error
             # per-regatta would burn hours writing regattas with no results.
@@ -189,6 +276,8 @@ class ClubspotScraper:
                 ) from e
 
             skipped = 0
+            scraped_since_restart = 0
+            stopped_early = None
             try:
                 for idx, regatta_data in enumerate(regattas_data, 1):
                     # Check if user requested stop
@@ -209,11 +298,44 @@ class ClubspotScraper:
                         skipped += 1
                         continue
 
+                    if max_per_run and self.stats['regattas_scraped'] >= max_per_run:
+                        stopped_early = f"Reached the per-run cap of {max_per_run} regattas"
+                        break
+
+                    # Memory watchdog: restart Chrome above the soft
+                    # threshold, stop the run above the hard threshold --
+                    # never let the container hit its cap and get OOM-killed
+                    state, used_mb, limit_mb = self._memory_state()
+                    if state != 'ok':
+                        logger.warning(
+                            f"Memory at {used_mb:.0f}MB of {limit_mb:.0f}MB -- "
+                            f"restarting Chrome to reclaim memory"
+                        )
+                        driver = self._restart_driver(driver)
+                        scraped_since_restart = 0
+                        state, used_mb, limit_mb = self._memory_state()
+                        if state == 'critical':
+                            stopped_early = (
+                                f"Stopped to stay under the memory cap "
+                                f"({used_mb:.0f}MB used of {limit_mb:.0f}MB "
+                                f"after a Chrome restart)"
+                            )
+                            break
+
                     logger.info(f"[{idx}/{len(regattas_data)}] Scraping: {regatta_name} ({regatta_id})")
 
                     try:
                         self._scrape_regatta(regatta_id, regatta_data, driver)
                         self.stats['regattas_scraped'] += 1
+                        scraped_since_restart += 1
+
+                        if scraped_since_restart >= self.RESTART_DRIVER_EVERY:
+                            logger.info(
+                                f"Restarting Chrome after {scraped_since_restart} "
+                                f"regattas to keep memory flat"
+                            )
+                            driver = self._restart_driver(driver)
+                            scraped_since_restart = 0
 
                         # Update progress in database periodically
                         if idx % 10 == 0:
@@ -225,11 +347,8 @@ class ClubspotScraper:
                         time.sleep(2)  # Be polite, don't hammer the server
                     except WebDriverException as e:
                         logger.warning(f"Chrome session lost while scraping {regatta_id}: {e}; restarting browser")
-                        try:
-                            driver.quit()
-                        except Exception:
-                            pass
-                        driver = make_driver()  # if this raises, the run fails loudly
+                        driver = self._restart_driver(driver)  # if this raises, the run fails loudly
+                        scraped_since_restart = 0
                     except Exception as e:
                         logger.error(f"Error scraping {regatta_id}: {e}")
                         continue
@@ -238,12 +357,16 @@ class ClubspotScraper:
                     driver.quit()
                 except Exception:
                     pass
+                gc.collect()
 
             log.status = 'completed'
             log.completed_at = datetime.utcnow()
             log.regattas_scraped = self.stats['regattas_scraped']
             log.sailors_added = self.stats['sailors_added']
             log.results_added = self.stats['results_added']
+            if stopped_early:
+                log.error_message = f"{stopped_early}; remaining regattas will be picked up on the next run"
+                logger.info(f"Run stopped early: {stopped_early}")
             db.session.commit()
 
             logger.info(f"Scraping complete! Skipped {skipped} already-scraped regattas. Stats: {self.stats}")
