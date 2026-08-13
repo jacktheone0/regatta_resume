@@ -15,6 +15,8 @@ import scraper_v2
 # Import database models
 from models import db, SailorName, HSResult, CollegeResult, School
 
+from dateutil import parser as dateutil_parser
+
 from scraper_logging import db_log as _db_log, attach_db_log_handler
 
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +26,60 @@ logger = logging.getLogger(__name__)
 def _attach_db_log_handler():
     """Attach the shared DB handler once; call from inside an app context."""
     attach_db_log_handler(logger)
+
+
+# Sentinel year: dateutil fills missing fields from the default, so a parsed
+# year of 1900 means the site's date text carried no year and can't be trusted
+_DATE_DEFAULT = datetime(1900, 1, 1)
+
+
+def _parse_regatta_date(value):
+    """Parse the regatta date text from a sailor page; None if unparseable"""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+
+    # Exact formats on the full string first (before any range handling,
+    # which would corrupt ISO dates)
+    for fmt in ('%m/%d/%Y', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            pass
+
+    # Range collapsed to its start ("Oct 4-5, 2024" -> "Oct 4, 2024"), then
+    # the left side of a full range like "10/4/2024-10/5/2024", then the raw
+    # string last -- dateutil misreads a bare range like "4-5" as a year
+    candidates = []
+    collapsed = re.sub(r'(\d)\s*[-–]\s*\d+', r'\1', s)
+    if collapsed != s:
+        candidates.append(collapsed)
+    for sep in ('-', '–'):
+        left = s.split(sep)[0].strip()
+        if left and left != s and left not in candidates:
+            candidates.append(left)
+    candidates.append(s)
+
+    for candidate in candidates:
+        try:
+            return datetime.strptime(candidate, '%m/%d/%Y').date()
+        except ValueError:
+            pass
+        # Without an explicit 4-digit year dateutil invents one (from a
+        # range like "4-5" or today's date), so don't trust the result
+        if not re.search(r'\d{4}', candidate):
+            continue
+        try:
+            parsed = dateutil_parser.parse(candidate, default=_DATE_DEFAULT)
+            if parsed.year != _DATE_DEFAULT.year:
+                return parsed.date()
+        except (ValueError, OverflowError):
+            continue
+
+    logger.warning(f"Could not parse regatta date '{s}'")
+    return None
 
 
 def store_schools_in_db(schools_df: pd.DataFrame, source_type: str):
@@ -141,6 +197,7 @@ def store_sailors_in_db(rosters_df: pd.DataFrame, source_type: str):
 def store_results_in_db(results_df: pd.DataFrame, source_type: str):
     """Store results from DataFrame into database - optimized with batching"""
     results_added = 0
+    results_updated = 0
     batch_size = 10  # Commit every 10 results
     total_rows = len(results_df)
 
@@ -208,16 +265,15 @@ def store_results_in_db(results_df: pd.DataFrame, source_type: str):
         else:
             continue
 
-        # Parse date
-        regatta_date = None
-        if pd.notna(row.get('Date')):
-            try:
-                regatta_date = datetime.strptime(row['Date'], '%m/%d/%Y').date()
-            except:
-                pass
+        # Parse date (multiple site formats; warns on strings it can't read)
+        regatta_date = _parse_regatta_date(row.get('Date'))
+
+        position = row.get('Position') if pd.notna(row.get('Position')) else None
+        division = row.get('Division') if pd.notna(row.get('Division')) else None
 
         # Build raw row data
-        raw_row = f"{row['Regatta']} | {row['Result']} | {row.get('Source', '')} | {row.get('Date', '')}"
+        raw_row = (f"{row['Regatta']} | {row['Result']} | {position or ''} | "
+                   f"{row.get('Source', '')} | {row.get('Date', '')}")
 
         # Create result record
         result_data = {
@@ -228,8 +284,8 @@ def store_results_in_db(results_df: pd.DataFrame, source_type: str):
             'place': place_str,
             'place_numeric': place_numeric,
             'total_boats': total_boats,
-            'position': None,  # Not in user's scraper
-            'division': None,  # Not in user's scraper
+            'position': position,
+            'division': division,
             'school': sailor.school,
             'raw_row_data': raw_row
         }
@@ -237,16 +293,29 @@ def store_results_in_db(results_df: pd.DataFrame, source_type: str):
         # Store in appropriate table (check pre-loaded existing results)
         result_key = (sailor.id, row['Regatta'])
 
-        if source_type == 'hs' and row.get('Source') == 'HS':
-            if result_key not in existing_lookup:
-                result = HSResult(**result_data)
-                db.session.add(result)
-                existing_lookup[result_key] = result  # Add to lookup to prevent duplicates in same batch
-                results_added += 1
+        matches_source = (source_type == 'hs' and row.get('Source') == 'HS') or \
+                         (source_type == 'college' and row.get('Source') == 'College')
 
-        elif source_type == 'college' and row.get('Source') == 'College':
-            if result_key not in existing_lookup:
-                result = CollegeResult(**result_data)
+        if matches_source:
+            if result_key in existing_lookup:
+                # Backfill date/position/division on rows stored before the
+                # scraper captured them
+                existing = existing_lookup[result_key]
+                updated = False
+                if existing.regatta_date is None and regatta_date:
+                    existing.regatta_date = regatta_date
+                    updated = True
+                if existing.position is None and position:
+                    existing.position = position
+                    updated = True
+                if existing.division is None and division:
+                    existing.division = division
+                    updated = True
+                if updated:
+                    results_updated += 1
+            else:
+                model_cls = HSResult if source_type == 'hs' else CollegeResult
+                result = model_cls(**result_data)
                 db.session.add(result)
                 existing_lookup[result_key] = result  # Add to lookup to prevent duplicates in same batch
                 results_added += 1
@@ -259,7 +328,7 @@ def store_results_in_db(results_df: pd.DataFrame, source_type: str):
 
     # Final commit
     db.session.commit()
-    logger.info(f"✓ Stored {results_added} new results in database")
+    logger.info(f"✓ Stored {results_added} new results, backfilled {results_updated} existing results")
 
 
 def run_full_hs_scraper(limit_schools=None, limit_sailors=None):

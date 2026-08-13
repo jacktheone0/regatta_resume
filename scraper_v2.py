@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
+import re
 import time
 from typing import List, Dict, Optional
 import sys
@@ -8,6 +9,57 @@ import sys
 def build_sailor_url(sailor_name: str, base_url: str) -> str:
     cleaned = sailor_name.strip().lower().replace(" ", "-")
     return f"{base_url}{cleaned}/"
+
+def _cell_text(td) -> str:
+    """Cell text, preferring the linked value inside placement containers"""
+    span = td.find("span", class_="sailor-placement-container")
+    if span and span.find("a"):
+        return span.find("a").get_text(strip=True)
+    a = td.find("a")
+    if a:
+        return a.get_text(strip=True)
+    return td.get_text(strip=True)
+
+def _header_columns(table) -> Dict[str, int]:
+    """Map lowercased header names to column indices for one table"""
+    header_row = None
+    thead = table.find("thead")
+    if thead:
+        header_row = thead.find("tr")
+    if header_row is None:
+        first = table.find("tr")
+        if first and first.find("th"):
+            header_row = first
+    if header_row is None:
+        return {}
+    return {cell.get_text(strip=True).lower(): idx
+            for idx, cell in enumerate(header_row.find_all(["th", "td"]))}
+
+def _find_col(headers: Dict[str, int], *wanted) -> Optional[int]:
+    for name, idx in headers.items():
+        for want in wanted:
+            if want in name:
+                return idx
+    return None
+
+def _normalize_position(text: str):
+    """
+    'Skipper', 'Crew', 'Skipper (A)' etc. -> (position, embedded division).
+    The sailor page is per-sailor, so the value is the scraped sailor's own.
+    """
+    if not text:
+        return None, None
+    stripped = text.strip()
+    low = stripped.lower()
+    if low.startswith("skipper"):
+        position = "Skipper"
+    elif low.startswith("crew"):
+        position = "Crew"
+    else:
+        position = stripped[:20]
+    match = re.search(r"(?<![A-Za-z])([A-Da-d])(?![A-Za-z])", stripped)
+    division = f"{match.group(1).upper()} Div" if match else None
+    return position, division
 
 def scrape_regattas_from_page(url: str) -> pd.DataFrame:
     resp = requests.get(url, timeout=30)
@@ -17,6 +69,16 @@ def scrape_regattas_from_page(url: str) -> pd.DataFrame:
     records = []
 
     for table in tables:
+        # Locate columns by header name; the HS and college sites don't
+        # share an exact layout. Fall back to the historical fixed
+        # positions when a header is missing.
+        headers = _header_columns(table)
+        regatta_col = _find_col(headers, "regatta", "name")
+        date_col = _find_col(headers, "date")
+        position_col = _find_col(headers, "position", "role")
+        division_col = _find_col(headers, "division", "div")
+        place_col = _find_col(headers, "finish", "place", "result")
+
         tbody = table.find("tbody")
         if not tbody:
             continue
@@ -26,24 +88,30 @@ def scrape_regattas_from_page(url: str) -> pd.DataFrame:
             if len(cells) < 5:
                 continue
 
-            regatta_td = cells[0]
-            regatta_name = regatta_td.find("a").get_text(strip=True) if regatta_td.find("a") else regatta_td.get_text(strip=True)
+            def cell_at(col, fallback):
+                idx = col if col is not None and col < len(cells) else fallback
+                if idx is None:
+                    return ""
+                return _cell_text(cells[idx])
 
-            place_td = cells[-1]
-            span = place_td.find("span", class_="sailor-placement-container")
-            place_text = span.find("a").get_text(strip=True) if span and span.find("a") else place_td.get_text(strip=True)
+            regatta_name = cell_at(regatta_col, 0)
+            place_text = cell_at(place_col, -1)
+            date_text = cell_at(date_col, -3)
+            position_text = cell_at(position_col, None)
+            division_text = cell_at(division_col, None)
 
-            date_td = cells[-3]
-            span = date_td.find("span", class_="sailor-placement-container")
-            date_text = span.find("a").get_text(strip=True) if span and span.find("a") else date_td.get_text(strip=True)
+            position, embedded_division = _normalize_position(position_text)
+            division = division_text or embedded_division
 
             records.append({
                 "Regatta": regatta_name,
                 "Result": place_text,
-                "Date": date_text
+                "Date": date_text,
+                "Position": position,
+                "Division": division
             })
 
-    return pd.DataFrame(records, columns=["Regatta", "Result", "Date"])
+    return pd.DataFrame(records, columns=["Regatta", "Result", "Date", "Position", "Division"])
 
 def scrape_all_sites(name: str) -> pd.DataFrame:
     cleaned_name = name.replace(" ", "-").lower()
