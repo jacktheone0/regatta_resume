@@ -58,3 +58,4 @@ htmlcov/
 # Temp files
 *.tmp
 temp/
+.chrome/

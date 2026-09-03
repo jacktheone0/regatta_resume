@@ -14,6 +14,7 @@ import time
 from threading import Thread, Lock
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.support.ui import WebDriverWait
@@ -49,16 +50,48 @@ def make_driver():
     options.add_argument("--js-flags=--max-old-space-size=128")
     options.add_argument("--window-size=1280,720")
     options.page_load_strategy = "eager"
-    chrome_bin = os.environ.get('CHROME_BIN')
+    chrome_bin = _find_chrome_binary()
     if chrome_bin:
         options.binary_location = chrome_bin
-    driver = _start_chrome_with_timeout(options, seconds=90)
+    chromedriver = _find_chromedriver()
+    logger.info(f"Chrome binary: {chrome_bin or 'system default'}; "
+                f"chromedriver: {chromedriver or 'via Selenium Manager'}")
+    service = ChromeService(executable_path=chromedriver) if chromedriver else None
+    driver = _start_chrome_with_timeout(options, service=service, seconds=90)
     driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)
     return driver
 
 
-def _start_chrome_with_timeout(options, seconds=90):
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _find_chrome_binary():
+    """CHROME_BIN env first, then the copies build.sh installs under .chrome/"""
+    candidates = [
+        os.environ.get('CHROME_BIN'),
+        os.path.join(_BASE_DIR, '.chrome', 'chrome-headless-shell-linux64', 'chrome-headless-shell'),
+        os.path.join(_BASE_DIR, '.chrome', 'chrome-linux64', 'chrome'),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _find_chromedriver():
+    """CHROMEDRIVER_PATH env first, then the copy build.sh installs"""
+    candidates = [
+        os.environ.get('CHROMEDRIVER_PATH'),
+        os.path.join(_BASE_DIR, '.chrome', 'chromedriver-linux64', 'chromedriver'),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _start_chrome_with_timeout(options, service=None, seconds=90):
     """
     Start Chrome in a helper thread so a wedged startup handshake cannot
     block the scraper forever (Selenium has no client-side timeout).
@@ -67,7 +100,7 @@ def _start_chrome_with_timeout(options, seconds=90):
 
     def target():
         try:
-            driver = webdriver.Chrome(options=options)
+            driver = webdriver.Chrome(options=options, service=service)
             if holder.get('timed_out'):
                 # Too late to be used; don't leak the browser
                 try:
