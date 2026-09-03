@@ -61,6 +61,58 @@ def _normalize_position(text: str):
     division = f"{match.group(1).upper()} Div" if match else None
     return position, division
 
+_POSITION_CELL_RE = re.compile(r"^(skipper|crew)s?\b", re.IGNORECASE)
+
+# A finish cell is exactly 'N/M', optionally with a division: '21/32 (B Div)'.
+# fullmatch keeps dates like 4/5/2025 from qualifying.
+_FINISH_RE = re.compile(r"^\d+\s*/\s*\d+\s*(?:\([^)]{1,20}\))?$")
+
+# Numeric date (10/12/2024, 24-10-05) or month name followed by a day number
+_DATE_HINT_RE = re.compile(
+    r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})"
+    r"|(\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b)",
+    re.IGNORECASE)
+
+def _find_finish_cell(cell_texts):
+    for text in reversed(cell_texts):  # the finish normally sits at the end
+        stripped = (text or "").strip()
+        if stripped and _FINISH_RE.fullmatch(stripped):
+            return stripped
+    return ""
+
+def _find_date_cell(cell_texts):
+    for text in cell_texts[1:]:  # cell 0 is the regatta name
+        stripped = (text or "").strip()
+        if not stripped or _FINISH_RE.fullmatch(stripped) or _POSITION_CELL_RE.match(stripped):
+            continue
+        if _DATE_HINT_RE.search(stripped):
+            return stripped
+    return ""
+
+def _find_position_cell(cell_texts):
+    """
+    The live sailor pages carry the role as a bare 'Skipper'/'Crew' cell
+    with no usable column header, so scan the row for it (skipping the
+    regatta-name cell, which could itself start with 'Crew ...').
+    """
+    for text in cell_texts[1:]:
+        stripped = (text or "").strip()
+        if stripped and len(stripped) <= 20 and _POSITION_CELL_RE.match(stripped):
+            return stripped
+    return ""
+
+def _division_from_result(place_text):
+    """Finish cells read like '21/32 (B Div)'; the division rides in the parens"""
+    if not place_text:
+        return None
+    match = re.search(r"\(([^)]{1,20})\)", place_text)
+    if not match:
+        return None
+    division = match.group(1).strip()
+    if re.fullmatch(r"[A-Da-d]", division):
+        division = f"{division.upper()} Div"
+    return division
+
 def scrape_regattas_from_page(url: str) -> pd.DataFrame:
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
@@ -88,20 +140,41 @@ def scrape_regattas_from_page(url: str) -> pd.DataFrame:
             if len(cells) < 5:
                 continue
 
+            cell_texts = [_cell_text(td) for td in cells]
+
             def cell_at(col, fallback):
                 idx = col if col is not None and col < len(cells) else fallback
                 if idx is None:
                     return ""
-                return _cell_text(cells[idx])
+                return cell_texts[idx]
 
             regatta_name = cell_at(regatta_col, 0)
-            place_text = cell_at(place_col, -1)
-            date_text = cell_at(date_col, -3)
+
+            # Headers first; when absent or not matching, detect cells by
+            # their content -- fixed indices misfire on the live headerless
+            # layout (the old cells[-3] "date" was the position cell)
+            place_text = cell_at(place_col, None)
+            if not (place_text and _FINISH_RE.fullmatch(place_text.strip())):
+                place_text = _find_finish_cell(cell_texts) or cell_at(place_col, -1)
+
+            date_text = cell_at(date_col, None)
+            if not (date_text and _DATE_HINT_RE.search(date_text)):
+                date_text = _find_date_cell(cell_texts) or cell_at(date_col, -3)
+
             position_text = cell_at(position_col, None)
+            if not position_text:
+                position_text = _find_position_cell(cell_texts)
+
             division_text = cell_at(division_col, None)
 
             position, embedded_division = _normalize_position(position_text)
-            division = division_text or embedded_division
+
+            # Division priority: '(B Div)' inside the finish text (the live
+            # format), then a labeled division column, then one embedded in
+            # the position text
+            division = (_division_from_result(place_text)
+                        or division_text
+                        or embedded_division)
 
             records.append({
                 "Regatta": regatta_name,
