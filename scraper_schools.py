@@ -2,7 +2,7 @@
 Integration layer: Uses user's proven scrapers and stores results in database
 """
 import pandas as pd
-from datetime import datetime
+from datetime import date, datetime
 import time
 import logging
 import re
@@ -32,9 +32,40 @@ def _attach_db_log_handler():
 # year of 1900 means the site's date text carried no year and can't be trusted
 _DATE_DEFAULT = datetime(1900, 1, 1)
 
+# The yearless shape the sailor pages actually print: 'Apr 20', 'Mar 06'.
+# Gating the season-code fallback on this keeps a bare numeric range like
+# '4-5' from being handed a year it can't justify.
+_MONTH_DAY_RE = re.compile(
+    r'^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})$',
+    re.IGNORECASE)
 
-def _parse_regatta_date(value):
-    """Parse the regatta date text from a sailor page; None if unparseable"""
+_SEASON_CODE_RE = re.compile(r'^([fs])(\d{2})$', re.IGNORECASE)
+
+
+def _year_for_season(season_code, month):
+    """
+    TechScore season codes sit inside one calendar year: f24 runs Sep-Dec
+    2024, s26 runs Feb-Jun 2026. The only realistic wrap is a fall regatta
+    sailed in the new year, which belongs to the following one.
+    """
+    if not season_code:
+        return None
+    match = _SEASON_CODE_RE.match(str(season_code).strip())
+    if not match:
+        return None
+    year = 2000 + int(match.group(2))
+    if match.group(1).lower() == 'f' and month <= 6:
+        year += 1
+    return year
+
+
+def _parse_regatta_date(value, season_code=None):
+    """
+    Parse the regatta date text from a sailor page; None if unparseable.
+
+    season_code comes from the regatta link (/s26/...) and supplies the year
+    for the yearless dates the sailor pages print.
+    """
     if value is None or (not isinstance(value, str) and pd.isna(value)):
         return None
     s = str(value).strip()
@@ -68,9 +99,19 @@ def _parse_regatta_date(value):
         except ValueError:
             pass
         # Without an explicit 4-digit year dateutil invents one (from a
-        # range like "4-5" or today's date), so don't trust the result
+        # range like "4-5" or today's date), so don't trust the result --
+        # unless the regatta link gave us a season to take the year from
         if not re.search(r'\d{4}', candidate):
-            continue
+            season_year = None
+            if _MONTH_DAY_RE.match(candidate):
+                try:
+                    month_day = dateutil_parser.parse(candidate, default=_DATE_DEFAULT)
+                except (ValueError, OverflowError):
+                    continue
+                season_year = _year_for_season(season_code, month_day.month)
+            if season_year is None:
+                continue
+            return date(season_year, month_day.month, month_day.day)
         try:
             parsed = dateutil_parser.parse(candidate, default=_DATE_DEFAULT)
             if parsed.year != _DATE_DEFAULT.year:
@@ -78,7 +119,7 @@ def _parse_regatta_date(value):
         except (ValueError, OverflowError):
             continue
 
-    logger.warning(f"Could not parse regatta date '{s}'")
+    logger.warning(f"Could not parse regatta date '{s}' (season {season_code or 'unknown'})")
     return None
 
 
@@ -265,9 +306,13 @@ def store_results_in_db(results_df: pd.DataFrame, source_type: str):
         else:
             continue
 
-        # Parse date (multiple site formats; warns on strings it can't read)
-        regatta_date = _parse_regatta_date(row.get('Date'))
+        # Parse date (multiple site formats; warns on strings it can't read).
+        # The season code from the regatta link carries the year, which the
+        # date cell on the sailor pages leaves out.
+        season_code = row.get('Regatta_Season') if pd.notna(row.get('Regatta_Season')) else None
+        regatta_date = _parse_regatta_date(row.get('Date'), season_code)
 
+        regatta_link = row.get('Regatta_Link') if pd.notna(row.get('Regatta_Link')) else None
         position = row.get('Position') if pd.notna(row.get('Position')) else None
         division = row.get('Division') if pd.notna(row.get('Division')) else None
 
@@ -279,7 +324,7 @@ def store_results_in_db(results_df: pd.DataFrame, source_type: str):
         result_data = {
             'sailor_name_id': sailor.id,
             'regatta_name': row['Regatta'],
-            'regatta_link': None,  # User's scraper doesn't capture links
+            'regatta_link': regatta_link,
             'regatta_date': regatta_date,
             'place': place_str,
             'place_numeric': place_numeric,
@@ -304,6 +349,9 @@ def store_results_in_db(results_df: pd.DataFrame, source_type: str):
                 updated = False
                 if existing.regatta_date is None and regatta_date:
                     existing.regatta_date = regatta_date
+                    updated = True
+                if existing.regatta_link is None and regatta_link:
+                    existing.regatta_link = regatta_link
                     updated = True
                 if existing.position is None and position:
                     existing.position = position

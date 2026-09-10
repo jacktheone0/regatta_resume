@@ -4,6 +4,7 @@ import pandas as pd
 import re
 import time
 from typing import List, Dict, Optional
+from urllib.parse import urljoin, urlparse
 import sys
 
 def build_sailor_url(sailor_name: str, base_url: str) -> str:
@@ -19,6 +20,29 @@ def _cell_text(td) -> str:
     if a:
         return a.get_text(strip=True)
     return td.get_text(strip=True)
+
+def _cell_href(td) -> str:
+    """The cell's link target, '' when the cell carries no link"""
+    a = td.find("a")
+    if a and a.has_attr("href"):
+        return a["href"].strip()
+    return ""
+
+# TechScore paths lead with the season: /f24/nickerson/, /s26/central-fleet-race/
+_SEASON_PATH_RE = re.compile(r"^/?([fs])(\d{2})/", re.IGNORECASE)
+
+def _season_code_from_href(href: str) -> Optional[str]:
+    """
+    '/s26/central-fleet-race/' -> 's26'. The sailor pages print dates with
+    no year ('Apr 20'), so the regatta link is the only per-row carrier of
+    the year. None when the href isn't a seasoned regatta path.
+    """
+    if not href:
+        return None
+    match = _SEASON_PATH_RE.match(urlparse(href).path)
+    if not match:
+        return None
+    return f"{match.group(1).lower()}{match.group(2)}"
 
 def _header_columns(table) -> Dict[str, int]:
     """Map lowercased header names to column indices for one table"""
@@ -116,6 +140,7 @@ def _division_from_result(place_text):
 def scrape_regattas_from_page(url: str) -> pd.DataFrame:
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
+    page_url = resp.url  # post-redirect, so relative regatta hrefs resolve
     soup = BeautifulSoup(resp.text, "html.parser")
     tables = soup.find_all("table", class_="participation-table")
     records = []
@@ -142,13 +167,25 @@ def scrape_regattas_from_page(url: str) -> pd.DataFrame:
 
             cell_texts = [_cell_text(td) for td in cells]
 
+            def idx_at(col, fallback):
+                return col if col is not None and col < len(cells) else fallback
+
             def cell_at(col, fallback):
-                idx = col if col is not None and col < len(cells) else fallback
+                idx = idx_at(col, fallback)
                 if idx is None:
                     return ""
                 return cell_texts[idx]
 
+            regatta_idx = idx_at(regatta_col, 0)
             regatta_name = cell_at(regatta_col, 0)
+
+            # The regatta cell links to /<season>/<slug>/, which is where the
+            # year comes from -- the date cell itself has none. Read it here
+            # and not from the finish cell, whose href sometimes points at a
+            # division page or a full-scores anchor instead.
+            regatta_href = _cell_href(cells[regatta_idx]) if regatta_idx is not None else ""
+            season_code = _season_code_from_href(regatta_href)
+            regatta_link = urljoin(page_url, regatta_href) if regatta_href else None
 
             # Headers first; when absent or not matching, detect cells by
             # their content -- fixed indices misfire on the live headerless
@@ -178,13 +215,18 @@ def scrape_regattas_from_page(url: str) -> pd.DataFrame:
 
             records.append({
                 "Regatta": regatta_name,
+                "Regatta_Link": regatta_link,
+                # Named apart from roster_scraper's Season_Code, which means
+                # the season a sailor was rostered in, not the regatta's
+                "Regatta_Season": season_code,
                 "Result": place_text,
                 "Date": date_text,
                 "Position": position,
                 "Division": division
             })
 
-    return pd.DataFrame(records, columns=["Regatta", "Result", "Date", "Position", "Division"])
+    return pd.DataFrame(records, columns=["Regatta", "Regatta_Link", "Regatta_Season",
+                                          "Result", "Date", "Position", "Division"])
 
 def scrape_all_sites(name: str) -> pd.DataFrame:
     cleaned_name = name.replace(" ", "-").lower()
