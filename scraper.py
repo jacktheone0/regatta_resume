@@ -264,10 +264,15 @@ class ClubspotScraper:
             'clubObject': {'$nin': ['HCyTbbCF4n', 'XVgOrNASDY', 'ecNpKgrusD', 'GTKaJKeque', 'TTBnsppUug', 'pnBFlwJ2Mf']},
         }
 
-        # Add year filter if provided
+        # Only regattas that have already started: newest-first ordering
+        # otherwise fills each run with UPCOMING events that have no
+        # results yet (and, never gaining results, they would eat the
+        # per-run cap again every week)
+        now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+        start_filter = {'$lte': {'__type': 'Date', 'iso': now_iso}}
         if start_year:
-            start_date = f"{start_year}-01-01T00:00:00.000Z"
-            where_clause['startDate'] = {'$gte': {'__type': 'Date', 'iso': start_date}}
+            start_filter['$gte'] = {'__type': 'Date', 'iso': f"{start_year}-01-01T00:00:00.000Z"}
+        where_clause['startDate'] = start_filter
 
         data = {
             'where': where_clause,
