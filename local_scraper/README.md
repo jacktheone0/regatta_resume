@@ -35,6 +35,14 @@ Work through the numbered buttons:
 3. **Run Scraper** – scrapes the N newest regattas' results pages and
    fills the results table live. The status bar gives the verdict.
 
+**Past regattas only** (on by default) keeps upcoming events out of the
+run -- future regattas have no results yet.
+
+To test a **single regatta**, paste its ID or its
+`theclubspot.com/regatta/...` URL into the "One test regatta" box and
+click **Scrape This One** ("1. Test API" prints IDs of recent regattas
+you can copy).
+
 Uncheck **Headless Chrome** to watch the browser work in a visible
 window. **Export CSV** saves everything scraped, including the raw
 pipe-separated row text used for parsing (useful for debugging).

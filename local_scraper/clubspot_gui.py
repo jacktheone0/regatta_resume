@@ -72,7 +72,7 @@ return Array.from(out);
 """
 
 
-def fetch_regattas(start_year=2024, limit=25):
+def fetch_regattas(start_year=2024, limit=25, past_only=True):
     """Fetch newest regattas from the Parse API (same call as the server)"""
     where_clause = {
         'archived': {'$ne': True},
@@ -80,10 +80,16 @@ def fetch_regattas(start_year=2024, limit=25):
         'clubObject': {'$nin': ['HCyTbbCF4n', 'XVgOrNASDY', 'ecNpKgrusD',
                                 'GTKaJKeque', 'TTBnsppUug', 'pnBFlwJ2Mf']},
     }
+    start_filter = {}
     if start_year:
-        where_clause['startDate'] = {
-            '$gte': {'__type': 'Date', 'iso': f"{start_year}-01-01T00:00:00.000Z"}
-        }
+        start_filter['$gte'] = {'__type': 'Date', 'iso': f"{start_year}-01-01T00:00:00.000Z"}
+    if past_only:
+        # Newest-first ordering otherwise returns UPCOMING regattas,
+        # which have no results yet
+        now_iso = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime())
+        start_filter['$lte'] = {'__type': 'Date', 'iso': now_iso}
+    if start_filter:
+        where_clause['startDate'] = start_filter
     data = {
         'where': where_clause,
         'include': 'clubObject',
@@ -100,6 +106,34 @@ def fetch_regattas(start_year=2024, limit=25):
     response.raise_for_status()
     payload = response.json()
     return payload.get('results', []), payload.get('count', 0)
+
+
+def fetch_regatta_by_id(regatta_id):
+    """Look up one regatta's metadata; None if not found"""
+    data = {
+        'where': {'objectId': regatta_id},
+        'keys': 'objectId,name,startDate,endDate',
+        'limit': 1,
+        '_method': 'GET',
+        '_ApplicationId': 'myclubspot2017',
+        '_ClientVersion': 'js4.3.1-forked-1.0',
+        '_InstallationId': 'ce500aaa-c2a0-4d06-a9e3-1a558a606542',
+    }
+    response = requests.post(PARSE_API_URL, headers=PARSE_HEADERS, json=data, timeout=60)
+    response.raise_for_status()
+    results = response.json().get('results', [])
+    return results[0] if results else None
+
+
+def extract_regatta_id(text):
+    """Accept a bare regatta ID or any theclubspot.com/regatta/<id>/... URL"""
+    text = (text or '').strip()
+    match = re.search(r'regatta/([A-Za-z0-9]+)', text)
+    if match:
+        return match.group(1)
+    if re.fullmatch(r'[A-Za-z0-9]{6,20}', text):
+        return text
+    return None
 
 
 def make_driver(headless=True):
@@ -212,7 +246,11 @@ class ScraperGUI(tk.Tk):
 
         self.headless_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(controls, text="Headless Chrome",
-                        variable=self.headless_var).pack(side='left', padx=(0, 10))
+                        variable=self.headless_var).pack(side='left', padx=(0, 6))
+
+        self.past_only_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(controls, text="Past regattas only",
+                        variable=self.past_only_var).pack(side='left', padx=(0, 10))
 
         self.test_btn = ttk.Button(controls, text="1. Test API", command=self.test_api)
         self.test_btn.pack(side='left', padx=2)
@@ -224,6 +262,16 @@ class ScraperGUI(tk.Tk):
                                    state='disabled')
         self.stop_btn.pack(side='left', padx=2)
         ttk.Button(controls, text="Export CSV", command=self.export_csv).pack(side='left', padx=2)
+
+        single = ttk.Frame(self, padding=(8, 0, 8, 4))
+        single.pack(fill='x')
+        ttk.Label(single, text="One test regatta (ID or URL):").pack(side='left')
+        self.single_var = tk.StringVar()
+        ttk.Entry(single, textvariable=self.single_var, width=50).pack(
+            side='left', padx=4, fill='x', expand=True)
+        self.single_btn = ttk.Button(single, text="Scrape This One",
+                                     command=self.scrape_one)
+        self.single_btn.pack(side='left', padx=2)
 
         self.status_var = tk.StringVar(value="Idle. Run steps 1-3 to verify the scraper.")
         ttk.Label(self, textvariable=self.status_var, padding=(8, 0)).pack(fill='x')
@@ -268,6 +316,7 @@ class ScraperGUI(tk.Tk):
                     self.run_btn.configure(state='normal')
                     self.test_btn.configure(state='normal')
                     self.chrome_btn.configure(state='normal')
+                    self.single_btn.configure(state='normal')
                     self.stop_btn.configure(state='disabled')
         except queue.Empty:
             pass
@@ -287,6 +336,7 @@ class ScraperGUI(tk.Tk):
         self.run_btn.configure(state='disabled')
         self.test_btn.configure(state='disabled')
         self.chrome_btn.configure(state='disabled')
+        self.single_btn.configure(state='disabled')
         self.stop_btn.configure(state='normal')
         self.worker = threading.Thread(target=target, daemon=True)
         self.worker.start()
@@ -294,10 +344,13 @@ class ScraperGUI(tk.Tk):
     # -- actions -----------------------------------------------------------
 
     def test_api(self):
+        year = int(self.year_var.get() or 0)
+        past_only = self.past_only_var.get()
+
         def task():
             try:
                 self.log("Querying ClubSpot Parse API for newest regattas...")
-                regattas, total = fetch_regattas(int(self.year_var.get() or 0), limit=5)
+                regattas, total = fetch_regattas(year, limit=5, past_only=past_only)
                 self.log(f"API OK -- {total} regattas available. Newest:")
                 for r in regattas:
                     start = (r.get('startDate') or {}).get('iso', '?')[:10]
@@ -311,12 +364,14 @@ class ScraperGUI(tk.Tk):
         self._start_worker(task)
 
     def test_chrome(self):
+        headless = self.headless_var.get()
+
         def task():
             driver = None
             try:
                 self.log("Starting Chrome (Selenium Manager may download a driver "
                          "on first run, this can take a minute)...")
-                driver = make_driver(self.headless_var.get())
+                driver = make_driver(headless)
                 version = driver.capabilities.get('browserVersion', '?')
                 self.log(f"Chrome OK -- version {version}")
                 self.set_status(f"Chrome OK (version {version})")
@@ -330,14 +385,19 @@ class ScraperGUI(tk.Tk):
         self._start_worker(task)
 
     def run_scraper(self):
+        year = int(self.year_var.get() or 0)
+        past_only = self.past_only_var.get()
+        limit = max(1, int(self.limit_var.get() or 1))
+        headless = self.headless_var.get()
+
         def task():
             driver = None
             try:
-                limit = max(1, int(self.limit_var.get() or 1))
-                self.log(f"Fetching {limit} newest regattas...")
-                regattas, total = fetch_regattas(int(self.year_var.get() or 0), limit=limit)
+                self.log(f"Fetching {limit} newest "
+                         f"{'past ' if past_only else ''}regattas...")
+                regattas, total = fetch_regattas(year, limit=limit, past_only=past_only)
                 self.log(f"Got {len(regattas)} regattas (of {total} available). Starting Chrome...")
-                driver = make_driver(self.headless_var.get())
+                driver = make_driver(headless)
                 self.log("Chrome started. Scraping results pages...")
 
                 found_total = 0
@@ -357,7 +417,7 @@ class ScraperGUI(tk.Tk):
                             driver.quit()
                         except Exception:
                             pass
-                        driver = make_driver(self.headless_var.get())
+                        driver = make_driver(headless)
                         continue
                     if not results:
                         self.log(f"  No results rows found at {url} "
@@ -380,6 +440,58 @@ class ScraperGUI(tk.Tk):
             except Exception as e:
                 self.log(f"RUN FAILED: {e}")
                 self.set_status("Run failed -- see log")
+            finally:
+                if driver:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+                self.msg_queue.put(('done', None))
+        self._start_worker(task)
+
+    def scrape_one(self):
+        regatta_id = extract_regatta_id(self.single_var.get())
+        if not regatta_id:
+            messagebox.showinfo(
+                "No regatta",
+                "Paste a regatta ID or a theclubspot.com/regatta/... URL first.\n"
+                "Tip: run '1. Test API' -- it lists IDs of recent regattas.")
+            return
+        headless = self.headless_var.get()
+
+        def task():
+            driver = None
+            try:
+                self.log(f"Looking up regatta {regatta_id}...")
+                meta = fetch_regatta_by_id(regatta_id)
+                if meta:
+                    start = (meta.get('startDate') or {}).get('iso', '?')[:10]
+                    name = meta.get('name', regatta_id)
+                    self.log(f"Found: {name} (starts {start})")
+                    if start > time.strftime('%Y-%m-%d'):
+                        self.log("  NOTE: this regatta is in the future -- "
+                                 "it likely has no results yet")
+                else:
+                    name = regatta_id
+                    self.log("Regatta not found via the API; trying its results page anyway")
+
+                self.log("Starting Chrome...")
+                driver = make_driver(headless)
+                results, url = scrape_regatta_results(driver, regatta_id)
+                if not results:
+                    self.log(f"No results rows found at {url}")
+                for r in results:
+                    row = (name, r['sailor_name'], r['placement'], r['points'], r['raw'])
+                    self.scraped_rows.append(row)
+                    self.msg_queue.put(('row', row))
+                self.log(f"DONE. {len(results)} results parsed from {name}.")
+                self.set_status(
+                    f"'{name}': {len(results)} results -- "
+                    + ("SCRAPER WORKS." if results else "nothing parsed, see log.")
+                )
+            except Exception as e:
+                self.log(f"SINGLE-REGATTA RUN FAILED: {e}")
+                self.set_status("Single-regatta run failed -- see log")
             finally:
                 if driver:
                     try:
