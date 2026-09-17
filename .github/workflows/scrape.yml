@@ -1,0 +1,109 @@
+name: Weekly ClubSpot scrape
+
+# The ClubSpot scraper needs Chrome and ~1GB of RAM, which does not fit in
+# the 512MB Render container it used to share with the web app (it OOM-killed
+# the site). GitHub's runners have Chrome pre-installed and plenty of memory,
+# and the scraper writes to Neon over the network, so it does not need to run
+# on the web host at all.
+
+on:
+  schedule:
+    # Monday 06:00 UTC = Sunday 22:00 PST / 23:00 PDT.
+    # GitHub cron is UTC only and does not follow daylight saving.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Max regattas to fetch from the API (blank = use the run cap)'
+        required: false
+        type: string
+      start_year:
+        description: 'Only scrape regattas from this year onwards'
+        required: false
+        default: '2024'
+        type: string
+
+# Never let two scrapes run at once: they would fight over the same regattas
+concurrency:
+  group: clubspot-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    # Hosted runners cap at 6h; leave headroom so the job ends on its own terms
+    timeout-minutes: 330
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      FLASK_APP: app.py
+      FLASK_ENV: production
+      # Importing app.py must not start the in-process APScheduler here
+      SCRAPER_ENABLED: 'false'
+      # Memory is not the constraint on a runner, wall-clock time is
+      SCRAPER_MAX_REGATTAS_PER_RUN: '1000'
+      SECRET_KEY: unused-by-the-scraper
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Show Chrome version
+        run: google-chrome --version
+
+      - name: Check the database connection
+        run: |
+          python - <<'PY'
+          import os, sys
+          if not os.environ.get('DATABASE_URL'):
+              sys.exit('DATABASE_URL secret is not set. Add it under '
+                       'Settings > Secrets and variables > Actions.')
+          from app import app, db
+          from sqlalchemy import text
+          with app.app_context():
+              db.session.execute(text('SELECT 1'))
+          print('Database connection OK')
+          PY
+
+      - name: Run the ClubSpot scraper
+        run: |
+          flask scrape \
+            ${{ inputs.limit && format('--limit {0}', inputs.limit) || '' }} \
+            --start-year ${{ inputs.start_year || '2024' }}
+
+      - name: Summarize the run
+        if: always()
+        run: |
+          python - <<'PY'
+          import os
+          from app import app
+          from models import ScraperLog
+          with app.app_context():
+              log = ScraperLog.query.order_by(ScraperLog.id.desc()).first()
+              if not log:
+                  print('No scraper log rows found.')
+              else:
+                  lines = [
+                      f'**Status:** {log.status}',
+                      f'**Regattas scraped:** {log.regattas_scraped}',
+                      f'**Sailors added:** {log.sailors_added}',
+                      f'**Results added:** {log.results_added}',
+                  ]
+                  if log.error_message:
+                      lines.append(f'**Note:** {log.error_message}')
+                  summary = '\n\n'.join(lines)
+                  print(summary)
+                  path = os.environ.get('GITHUB_STEP_SUMMARY')
+                  if path:
+                      with open(path, 'a') as f:
+                          f.write('## ClubSpot scrape\n\n' + summary + '\n')
+          PY

@@ -5,11 +5,12 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from config import config
 from models import db, User, Sailor, Regatta, Result, ResumeLink, SailorName, HSResult, CollegeResult, ScraperLogEntry
 from forms import LoginForm, RegisterForm, ClaimProfileForm
-from scraper import run_scraper
 from utils import generate_pdf, calculate_stats, get_performance_trends
+import click
 import os
 import json
 import time
+import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from sqlalchemy import desc, func, text
@@ -37,7 +38,13 @@ def load_user(user_id):
 
 
 # ============================================================================
-# SCHEDULER SETUP - Scraper runs every Sunday at 10:00 PM Pacific
+# SCHEDULER SETUP
+#
+# The weekly ClubSpot scrape now runs on GitHub Actions
+# (.github/workflows/scrape.yml), because headless Chrome does not fit in
+# this container's memory allowance. Keep SCRAPER_ENABLED=false in any
+# deployment that cannot spare ~1GB of RAM; setting it true restores the
+# in-process schedule for local use.
 # ============================================================================
 
 def scheduled_scraper_job():
@@ -45,6 +52,7 @@ def scheduled_scraper_job():
     with app.app_context():
         try:
             app.logger.info("Starting scheduled scraper job...")
+            from scraper import run_scraper  # imports selenium; keep it lazy
             run_scraper()
             app.logger.info("Scheduled scraper job completed successfully")
         except Exception as e:
@@ -694,28 +702,58 @@ def api_resume_pdf(token):
 @app.route('/api/scraper/run', methods=['POST'])
 @login_required
 def api_run_scraper():
-    """Manually trigger scraper (admin only)"""
-    # In production, add admin check here
-    # if not current_user.is_admin:
-    #     return jsonify({'error': 'Admin only'}), 403
+    """
+    Trigger the ClubSpot scraper (admin only).
+
+    The scraper runs as a GitHub Actions workflow, not in this process:
+    headless Chrome does not fit in the web service's memory allowance and
+    running it here OOM-killed the whole site.
+    """
+    repo = app.config['GITHUB_REPO']
+    workflow = app.config['GITHUB_WORKFLOW_FILE']
+    ref = app.config['GITHUB_WORKFLOW_REF']
+    token = app.config['GITHUB_WORKFLOW_TOKEN']
+    actions_url = f"https://github.com/{repo}/actions/workflows/{workflow}"
+
+    if not token:
+        return jsonify({
+            'error': 'GITHUB_WORKFLOW_TOKEN is not set, so this button cannot '
+                     'start the workflow. Run it from the Actions tab instead.',
+            'actions_url': actions_url
+        }), 503
 
     try:
-        # Run scraper in background with app context
-        from threading import Thread
+        response = requests.post(
+            f"https://api.github.com/repos/{repo}/actions/workflows/{workflow}/dispatches",
+            headers={
+                'Accept': 'application/vnd.github+json',
+                'Authorization': f'Bearer {token}',
+                'X-GitHub-Api-Version': '2022-11-28',
+            },
+            json={'ref': ref},
+            timeout=30
+        )
+    except requests.RequestException as e:
+        return jsonify({'error': f'Could not reach GitHub: {e}'}), 502
 
-        def run_with_context():
-            with app.app_context():
-                run_scraper()
-
-        thread = Thread(target=run_with_context)
-        thread.start()
-
+    # A successful dispatch returns 204 with no body
+    if response.status_code == 204:
         return jsonify({
             'success': True,
-            'message': 'Scraper started in background'
+            'message': f'Scrape started on GitHub Actions ({workflow} @ {ref}). '
+                       f'Progress appears in the live log below and in the Actions tab.',
+            'actions_url': actions_url
         })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+
+    detail = ''
+    try:
+        detail = response.json().get('message', '')
+    except ValueError:
+        detail = response.text[:200]
+    return jsonify({
+        'error': f'GitHub refused the request (HTTP {response.status_code}). {detail}',
+        'actions_url': actions_url
+    }), 502
 
 
 @app.route('/api/scraper/stop', methods=['POST'])
@@ -953,10 +991,15 @@ def init_db():
 
 
 @app.cli.command()
-def scrape():
-    """Run the scraper manually"""
-    print("Starting scraper...")
-    stats = run_scraper()
+@click.option('--limit', type=int, default=None,
+              help='Max regattas to fetch from the API (default: all)')
+@click.option('--start-year', type=int, default=2024,
+              help='Only scrape regattas from this year onwards')
+def scrape(limit, start_year):
+    """Run the ClubSpot scraper (entry point for the GitHub Actions job)"""
+    from scraper import run_scraper
+    print(f"Starting scraper (limit={limit or 'none'}, start_year={start_year})...")
+    stats = run_scraper(limit=limit, start_year=start_year)
     print(f"Scraping complete! Stats: {stats}")
 
 

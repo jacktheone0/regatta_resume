@@ -20,12 +20,20 @@ services:
         value: true
       - key: ENABLE_PDF_EXPORT
         value: true
+      # The ClubSpot scrape runs on GitHub Actions, not here: headless
+      # Chrome does not fit in this container and OOM-killed the site.
       - key: SCRAPER_ENABLED
-        value: true
-      - key: MEMORY_LIMIT_MB
-        value: 512
-      - key: SCRAPER_MAX_REGATTAS_PER_RUN
-        value: 300
+        value: false
+      - key: GITHUB_REPO
+        value: jacktheone0/regatta_resume
+      - key: GITHUB_WORKFLOW_FILE
+        value: scrape.yml
+      - key: GITHUB_WORKFLOW_REF
+        value: main
+      # Fine-grained PAT with Actions: read/write, so the admin button can
+      # start the workflow. Set its value in the Render dashboard.
+      - key: GITHUB_WORKFLOW_TOKEN
+        sync: false
 
 databases:
   - name: regattaresume-db

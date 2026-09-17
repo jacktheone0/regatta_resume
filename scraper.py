@@ -235,6 +235,10 @@ class ClubspotScraper:
             return False
 
         try:
+            # The cancel flag is set by another process (the admin Stop
+            # button in the web service), so the cached row in this
+            # session's identity map would never show it.
+            db.session.expire_all()
             log = ScraperLog.query.get(self.log_id)
             if log and log.status == 'cancelled':
                 logger.info("Stop requested by user, cancelling scraper...")

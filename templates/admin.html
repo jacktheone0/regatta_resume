@@ -17,7 +17,9 @@
                     <p>Manually trigger scrapers to fetch regatta data</p>
 
                     <div class="alert alert-info alert-permanent">
-                        <strong>Note:</strong> The ClubSpot scraper runs automatically every Sunday at 10:00 PM Pacific.
+                        <strong>Note:</strong> The ClubSpot scraper runs on GitHub Actions every
+                        Sunday at 10:00 PM Pacific &mdash; it needs Chrome and more memory than
+                        this server has. Its progress still streams to the live log.
                     </div>
 
                     <!-- ClubSpot Scraper -->
@@ -236,10 +238,22 @@ document.getElementById('runScraperBtn').addEventListener('click', async functio
 
         if (data.success) {
             statusMsg.className = 'alert alert-success alert-permanent';
-            statusMsg.textContent = '✓ ' + data.message + ' - Check back in a few minutes to see results.';
+            statusMsg.textContent = '✓ ' + data.message;
         } else {
             statusMsg.className = 'alert alert-danger alert-permanent';
             statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
+        }
+
+        // Both outcomes may carry a link to the workflow on GitHub
+        if (data.actions_url) {
+            const link = document.createElement('a');
+            link.href = data.actions_url;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.className = 'ms-2';
+            link.textContent = 'Open in GitHub Actions';
+            statusMsg.appendChild(document.createTextNode(' '));
+            statusMsg.appendChild(link);
         }
 
         statusDiv.style.display = 'block';
@@ -247,7 +261,7 @@ document.getElementById('runScraperBtn').addEventListener('click', async functio
         // Re-enable button after 10 seconds
         setTimeout(() => {
             btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-play-circle"></i> Run Scraper Now';
+            btn.innerHTML = '<i class="bi bi-play-circle"></i> Run ClubSpot Scraper';
         }, 10000);
 
     } catch (error) {
@@ -256,7 +270,7 @@ document.getElementById('runScraperBtn').addEventListener('click', async functio
         statusDiv.style.display = 'block';
 
         btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-play-circle"></i> Run Scraper Now';
+        btn.innerHTML = '<i class="bi bi-play-circle"></i> Run ClubSpot Scraper';
     }
 });
 

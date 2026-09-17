@@ -40,6 +40,14 @@ class Config:
     SCHEDULER_API_ENABLED = True
     SCHEDULER_TIMEZONE = 'UTC'
 
+    # GitHub Actions: the ClubSpot scraper runs there, not in this container
+    # (it needs Chrome and more memory than the web service has). The admin
+    # "Run ClubSpot Scraper" button dispatches that workflow.
+    GITHUB_REPO = os.environ.get('GITHUB_REPO', 'jacktheone0/regatta_resume')
+    GITHUB_WORKFLOW_FILE = os.environ.get('GITHUB_WORKFLOW_FILE', 'scrape.yml')
+    GITHUB_WORKFLOW_REF = os.environ.get('GITHUB_WORKFLOW_REF', 'main')
+    GITHUB_WORKFLOW_TOKEN = os.environ.get('GITHUB_WORKFLOW_TOKEN')
+
 class DevelopmentConfig(Config):
     """Development configuration"""
     DEBUG = True
