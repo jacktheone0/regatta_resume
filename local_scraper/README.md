@@ -1,9 +1,10 @@
 # Local ClubSpot Scraper (GUI)
 
 A standalone desktop tool to verify the ClubSpot scraper on your own
-computer, where Chrome and open internet are available. It uses the
-**same Parse API call and the same results parsing as `scraper.py` on
-the server**, so:
+computer, where Chrome and open internet are available. It imports the
+**same regatta selection and results parsing the server runs**
+(`clubspot_common.py` at the repository root -- shared code, not a
+copy), so:
 
 - results appearing here ⇒ the scraping logic works, and any server
   failure is an environment problem (Chrome install, memory, network)

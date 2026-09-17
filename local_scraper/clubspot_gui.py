@@ -17,112 +17,26 @@ chromedriver automatically. Nothing is written to any database; use
 "Export CSV" to save what was scraped.
 """
 import csv
-import json
+import os
 import queue
 import re
+import sys
 import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.support.ui import WebDriverWait
 
-# ---------------------------------------------------------------------------
-# Scraping core -- mirrors scraper.py on the server
-# ---------------------------------------------------------------------------
-
-PARSE_API_URL = 'https://theclubspot.com/parse/classes/regattas'
-PARSE_HEADERS = {
-    'Content-Type': 'text/plain',
-    'Origin': 'https://theclubspot.com',
-    'Referer': 'https://theclubspot.com/events',
-    'User-Agent': 'Mozilla/5.0',
-}
-
-HARVEST_JS = r"""
-const out = new Set();
-document.querySelectorAll("table").forEach(tbl => {
-    tbl.querySelectorAll("tbody tr").forEach(tr => {
-        const tds = Array.from(tr.querySelectorAll("td"));
-        if (tds.length === 0) return;
-        const parts = tds.map(td => (td.innerText || td.textContent || "").trim()).filter(Boolean);
-        const line = parts.join(" | ").trim();
-        if (line) out.add(line);
-    });
-});
-document.querySelectorAll("[role='row']").forEach(row => {
-    const cells = Array.from(row.querySelectorAll("[role='gridcell'], [role='cell']"));
-    if (cells.length === 0) return;
-    const parts = cells.map(c => (c.innerText || c.textContent || "").trim()).filter(Boolean);
-    const line = parts.join(" | ").trim();
-    if (line) out.add(line);
-});
-document.querySelectorAll(".ag-row").forEach(row => {
-    const cells = Array.from(row.querySelectorAll(".ag-cell"));
-    if (cells.length === 0) return;
-    const parts = cells.map(c => (c.innerText || c.textContent || "").trim()).filter(Boolean);
-    const line = parts.join(" | ").trim();
-    if (line) out.add(line);
-});
-return Array.from(out);
-"""
-
-
-def fetch_regattas(start_year=2024, limit=25, past_only=True):
-    """Fetch newest regattas from the Parse API (same call as the server)"""
-    where_clause = {
-        'archived': {'$ne': True},
-        'public': True,
-        'clubObject': {'$nin': ['HCyTbbCF4n', 'XVgOrNASDY', 'ecNpKgrusD',
-                                'GTKaJKeque', 'TTBnsppUug', 'pnBFlwJ2Mf']},
-    }
-    start_filter = {}
-    if start_year:
-        start_filter['$gte'] = {'__type': 'Date', 'iso': f"{start_year}-01-01T00:00:00.000Z"}
-    if past_only:
-        # Newest-first ordering otherwise returns UPCOMING regattas,
-        # which have no results yet
-        now_iso = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime())
-        start_filter['$lte'] = {'__type': 'Date', 'iso': now_iso}
-    if start_filter:
-        where_clause['startDate'] = start_filter
-    data = {
-        'where': where_clause,
-        'include': 'clubObject',
-        'keys': 'objectId,name,startDate,endDate,clubObject.id,clubObject.name',
-        'count': 1,
-        'limit': limit,
-        'order': '-startDate',
-        '_method': 'GET',
-        '_ApplicationId': 'myclubspot2017',
-        '_ClientVersion': 'js4.3.1-forked-1.0',
-        '_InstallationId': 'ce500aaa-c2a0-4d06-a9e3-1a558a606542',
-    }
-    response = requests.post(PARSE_API_URL, headers=PARSE_HEADERS, json=data, timeout=60)
-    response.raise_for_status()
-    payload = response.json()
-    return payload.get('results', []), payload.get('count', 0)
-
-
-def fetch_regatta_by_id(regatta_id):
-    """Look up one regatta's metadata; None if not found"""
-    data = {
-        'where': {'objectId': regatta_id},
-        'keys': 'objectId,name,startDate,endDate',
-        'limit': 1,
-        '_method': 'GET',
-        '_ApplicationId': 'myclubspot2017',
-        '_ClientVersion': 'js4.3.1-forked-1.0',
-        '_InstallationId': 'ce500aaa-c2a0-4d06-a9e3-1a558a606542',
-    }
-    response = requests.post(PARSE_API_URL, headers=PARSE_HEADERS, json=data, timeout=60)
-    response.raise_for_status()
-    results = response.json().get('results', [])
-    return results[0] if results else None
+# The regatta selection and results-row parsing are the SAME code the
+# server scraper runs: clubspot_common.py at the repository root. Not a
+# copy -- so what this GUI proves holds for the server, and vice versa.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from clubspot_common import (HARVEST_JS, fetch_regattas, fetch_regatta_by_id,  # noqa: E402
+                             parse_parse_date, parse_result_row, split_by_completion)
 
 
 def extract_regatta_id(text):
@@ -150,41 +64,6 @@ def make_driver(headless=True):
     driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)
     return driver
-
-
-def extract_placement(text):
-    text = text.replace('st', '').replace('nd', '').replace('rd', '').replace('th', '')
-    match = re.search(r'(\d+)', text)
-    return int(match.group(1)) if match else None
-
-
-def parse_result_row(row_text):
-    """Same row interpretation as ClubspotScraper._parse_result_row"""
-    parts = [p.strip() for p in row_text.split('|')]
-    if len(parts) < 2:
-        return None
-
-    placement = extract_placement(parts[0])
-    if not placement:
-        return None
-
-    sailor_name = None
-    for part in parts[1:5]:
-        if part and len(part) > 2 and not part.replace('.', '').isdigit():
-            sailor_name = part.split('\n')[0].strip()
-            break
-    if not sailor_name:
-        return None
-
-    result = {'placement': placement, 'sailor_name': sailor_name,
-              'points': None, 'raw': row_text}
-    for part in reversed(parts[-3:]):
-        try:
-            result['points'] = float(part)
-            break
-        except ValueError:
-            continue
-    return result
 
 
 def scrape_regatta_results(driver, regatta_id, timeout=12):
@@ -248,8 +127,10 @@ class ScraperGUI(tk.Tk):
         ttk.Checkbutton(controls, text="Headless Chrome",
                         variable=self.headless_var).pack(side='left', padx=(0, 6))
 
+        # Finished = started AND past its endDate: upcoming regattas have no
+        # results, in-progress ones only partial results
         self.past_only_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(controls, text="Past regattas only",
+        ttk.Checkbutton(controls, text="Finished regattas only",
                         variable=self.past_only_var).pack(side='left', padx=(0, 10))
 
         self.test_btn = ttk.Button(controls, text="1. Test API", command=self.test_api)
@@ -352,9 +233,15 @@ class ScraperGUI(tk.Tk):
                 self.log("Querying ClubSpot Parse API for newest regattas...")
                 regattas, total = fetch_regattas(year, limit=5, past_only=past_only)
                 self.log(f"API OK -- {total} regattas available. Newest:")
+                _, in_progress, future = split_by_completion(regattas)
                 for r in regattas:
                     start = (r.get('startDate') or {}).get('iso', '?')[:10]
-                    self.log(f"  {start}  {r.get('name')}  ({r.get('objectId')})")
+                    tag = ('  <-- FUTURE' if r in future
+                           else '  <-- in progress' if r in in_progress else '')
+                    self.log(f"  {start}  {r.get('name')}  ({r.get('objectId')}){tag}")
+                if future:
+                    self.log(f"WARNING: {len(future)} of these start in the future -- "
+                             f"the API did not honor the startDate bound")
                 self.set_status(f"API OK: {total} regattas available")
             except Exception as e:
                 self.log(f"API FAILED: {e}")
@@ -394,8 +281,17 @@ class ScraperGUI(tk.Tk):
             driver = None
             try:
                 self.log(f"Fetching {limit} newest "
-                         f"{'past ' if past_only else ''}regattas...")
+                         f"{'finished ' if past_only else ''}regattas...")
                 regattas, total = fetch_regattas(year, limit=limit, past_only=past_only)
+                if past_only:
+                    # Same second-stage check the server does: drop anything
+                    # the API's date bound let through
+                    regattas, in_progress, future = split_by_completion(regattas)
+                    if future:
+                        self.log(f"WARNING: dropped {len(future)} future regattas the API "
+                                 f"returned despite the startDate bound")
+                    if in_progress:
+                        self.log(f"Skipping {len(in_progress)} regattas still in progress")
                 self.log(f"Got {len(regattas)} regattas (of {total} available). Starting Chrome...")
                 driver = make_driver(headless)
                 self.log("Chrome started. Scraping results pages...")
@@ -423,7 +319,7 @@ class ScraperGUI(tk.Tk):
                         self.log(f"  No results rows found at {url} "
                                  f"(regatta may have no posted results)")
                     for r in results:
-                        row = (name, r['sailor_name'], r['placement'], r['points'], r['raw'])
+                        row = (name, r['sailor_name'], r['placement'], r.get('points_scored'), r['raw_row_data'])
                         self.scraped_rows.append(row)
                         self.msg_queue.put(('row', row))
                     found_total += len(results)
@@ -481,7 +377,7 @@ class ScraperGUI(tk.Tk):
                 if not results:
                     self.log(f"No results rows found at {url}")
                 for r in results:
-                    row = (name, r['sailor_name'], r['placement'], r['points'], r['raw'])
+                    row = (name, r['sailor_name'], r['placement'], r.get('points_scored'), r['raw_row_data'])
                     self.scraped_rows.append(row)
                     self.msg_queue.put(('row', row))
                 self.log(f"DONE. {len(results)} results parsed from {name}.")

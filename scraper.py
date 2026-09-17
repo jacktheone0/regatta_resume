@@ -6,10 +6,11 @@ import requests
 from datetime import datetime, timezone
 from models import db, Sailor, Regatta, Result, ScraperLog
 from scraper_logging import attach_db_log_handler
+from clubspot_common import (HARVEST_JS, extract_placement, fetch_regattas,
+                             parse_parse_date, parse_result_row, split_by_completion)
 import gc
 import logging
 import os
-import re
 import time
 from threading import Thread, Lock
 from selenium import webdriver
@@ -220,15 +221,6 @@ class ClubspotScraper:
         }
         self.log_id = log_id  # Track which ScraperLog we're updating
 
-        # Parse API configuration for fetching regatta IDs
-        self.parse_headers = {
-            'Content-Type': 'text/plain',
-            'Origin': 'https://theclubspot.com',
-            'Referer': 'https://theclubspot.com/events',
-            'User-Agent': 'Mozilla/5.0',
-        }
-        self.parse_api_url = 'https://theclubspot.com/parse/classes/regattas'
-
     def should_stop(self):
         """Check if we should stop scraping (user requested cancellation)"""
         if not self.log_id:
@@ -260,56 +252,31 @@ class ClubspotScraper:
             List of dicts with regatta metadata: objectId, name, startDate, clubObject
         """
         logger.info("Fetching regatta IDs from Parse API...")
-
-        # Build the where clause with date filter if provided
-        where_clause = {
-            'archived': {'$ne': True},
-            'public': True,
-            'clubObject': {'$nin': ['HCyTbbCF4n', 'XVgOrNASDY', 'ecNpKgrusD', 'GTKaJKeque', 'TTBnsppUug', 'pnBFlwJ2Mf']},
-        }
-
-        # Only regattas that have already started: newest-first ordering
-        # otherwise fills each run with UPCOMING events that have no
-        # results yet (and, never gaining results, they would eat the
-        # per-run cap again every week)
-        now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
-        start_filter = {'$lte': {'__type': 'Date', 'iso': now_iso}}
-        if start_year:
-            start_filter['$gte'] = {'__type': 'Date', 'iso': f"{start_year}-01-01T00:00:00.000Z"}
-        where_clause['startDate'] = start_filter
-
-        data = {
-            'where': where_clause,
-            'include': 'clubObject',
-            'keys': 'objectId,name,startDate,endDate,clubObject.id,clubObject.name',
-            'count': 1,
-            'limit': limit or 15000,  # Fetch up to 15k regattas
-            'order': '-startDate',
-            '_method': 'GET',
-            '_ApplicationId': 'myclubspot2017',
-            '_ClientVersion': 'js4.3.1-forked-1.0',
-            '_InstallationId': 'ce500aaa-c2a0-4d06-a9e3-1a558a606542',
-        }
+        now = datetime.now(timezone.utc)
 
         try:
-            response = requests.post(
-                self.parse_api_url,
-                headers=self.parse_headers,
-                json=data,
-                timeout=60
-            )
-            response.raise_for_status()
-            payload = response.json()
-
-            total_count = payload.get('count', 0)
-            results = payload.get('results', [])
-
-            logger.info(f"Parse API returned {len(results)} regattas (total available: {total_count})")
-            return results
-
+            regattas, total_count = fetch_regattas(
+                start_year=start_year, limit=limit, past_only=True, now=now)
         except Exception as e:
             logger.error(f"Failed to fetch regatta IDs from Parse API: {e}")
             return []
+
+        logger.info(f"Parse API returned {len(regattas)} regattas (total available: {total_count})")
+
+        # Check the API honored the startDate bound instead of trusting it:
+        # that cannot be verified offline, so every run reports what it got
+        finished, in_progress, future = split_by_completion(regattas, now=now)
+        if regattas:
+            newest = parse_parse_date(regattas[0].get('startDate'))
+            logger.info(f"Newest startDate in batch: {newest.isoformat() if newest else '?'} "
+                        f"(now {now.isoformat()})")
+        if future:
+            logger.warning(f"API returned {len(future)} regattas that start in the future "
+                           f"despite the startDate bound; dropping them")
+        if in_progress:
+            logger.info(f"Deferring {len(in_progress)} regattas still in progress "
+                        f"(started, endDate not yet reached) to a later run")
+        return finished
 
     def scrape_all_regattas(self, limit=None, start_year=2024):
         """
@@ -496,7 +463,17 @@ class ClubspotScraper:
         url = f"https://theclubspot.com/regatta/{regatta_id}"
 
         try:
-            # Create or update regatta record using API data
+            # Results first: a regatta row is only worth storing once it has
+            # results. Creating the row up front left every regatta a run
+            # ever looked at -- including ones with nothing posted --
+            # permanently in the table.
+            results_url = f"{url}/results?list_view=true"
+            results_data = self._scrape_results_with_selenium(results_url, regatta_id, driver)
+
+            if not results_data:
+                logger.info(f"No results posted for {regatta_id}; not storing a regatta row")
+                return
+
             if api_data:
                 regatta_metadata = self._parse_api_regatta_data(api_data, regatta_id, url)
             else:
@@ -509,11 +486,6 @@ class ClubspotScraper:
 
             regatta = self._get_or_create_regatta(regatta_metadata)
 
-            # Now scrape results using Selenium
-            results_url = f"{url}/results?list_view=true"
-            results_data = self._scrape_results_with_selenium(results_url, regatta.id, driver)
-
-            # Save results to database
             for result_data in results_data:
                 self._save_result(result_data, regatta.id)
 
@@ -556,42 +528,6 @@ class ClubspotScraper:
             logger.warning(f"Timeout waiting for results table at {results_url}")
             return []
 
-        # JavaScript to extract all data rows (excluding headers)
-        HARVEST_JS = r"""
-const out = new Set();
-
-// 1) Classic tables: only rows in <tbody> that have at least one <td>
-document.querySelectorAll("table").forEach(tbl => {
-    tbl.querySelectorAll("tbody tr").forEach(tr => {
-        const tds = Array.from(tr.querySelectorAll("td"));
-        if (tds.length === 0) return;
-        const parts = tds.map(td => (td.innerText || td.textContent || "").trim()).filter(Boolean);
-        const line = parts.join(" | ").trim();
-        if (line) out.add(line);
-    });
-});
-
-// 2) WAI-ARIA grids
-document.querySelectorAll("[role='row']").forEach(row => {
-    const cells = Array.from(row.querySelectorAll("[role='gridcell'], [role='cell']"));
-    if (cells.length === 0) return;
-    const parts = cells.map(c => (c.innerText || c.textContent || "").trim()).filter(Boolean);
-    const line = parts.join(" | ").trim();
-    if (line) out.add(line);
-});
-
-// 3) AG Grid
-document.querySelectorAll(".ag-row").forEach(row => {
-    const cells = Array.from(row.querySelectorAll(".ag-cell"));
-    if (cells.length === 0) return;
-    const parts = cells.map(c => (c.innerText || c.textContent || "").trim()).filter(Boolean);
-    const line = parts.join(" | ").trim();
-    if (line) out.add(line);
-});
-
-return Array.from(out);
-"""
-
         # Scroll to load lazy content
         for _ in range(8):
             driver.execute_script("window.scrollBy(0, Math.max(600, window.innerHeight));")
@@ -620,48 +556,7 @@ return Array.from(out);
             Dict with sailor_name, placement, and optionally points_scored
         """
         try:
-            # Split by pipe separator
-            parts = [p.strip() for p in row_text.split('|')]
-
-            if len(parts) < 2:
-                return None
-
-            # First column is usually placement
-            placement_text = parts[0]
-            placement = self._extract_placement(placement_text)
-
-            if not placement:
-                return None
-
-            # Find sailor name (usually 2nd or 3rd column, not a number)
-            sailor_name = None
-            for part in parts[1:5]:  # Check next few columns
-                if part and len(part) > 2 and not part.replace('.', '').isdigit():
-                    # Split on newlines if multiple names
-                    names = part.split('\n')
-                    sailor_name = names[0].strip()
-                    break
-
-            if not sailor_name:
-                return None
-
-            result_data = {
-                'placement': placement,
-                'sailor_name': sailor_name,
-                'raw_row_data': row_text
-            }
-
-            # Try to extract points (usually last column)
-            for part in reversed(parts[-3:]):
-                try:
-                    points = float(part)
-                    result_data['points_scored'] = points
-                    break
-                except ValueError:
-                    continue
-
-            return result_data
-
+            return parse_result_row(row_text)
         except Exception as e:
             logger.debug(f"Error parsing result row: {e}")
             return None
@@ -674,27 +569,12 @@ return Array.from(out);
             'name': api_data.get('name', f'Regatta {regatta_id}')
         }
 
-        # Parse start date
-        start_date_obj = api_data.get('startDate', {})
-        if isinstance(start_date_obj, dict) and 'iso' in start_date_obj:
-            try:
-                data['start_date'] = datetime.fromisoformat(
-                    start_date_obj['iso'].replace('Z', '+00:00')
-                ).date()
-            except Exception:
-                data['start_date'] = datetime.utcnow().date()
-        else:
-            data['start_date'] = datetime.utcnow().date()
+        start = parse_parse_date(api_data.get('startDate'))
+        data['start_date'] = start.date() if start else datetime.utcnow().date()
 
-        # Parse end date
-        end_date_obj = api_data.get('endDate', {})
-        if isinstance(end_date_obj, dict) and 'iso' in end_date_obj:
-            try:
-                data['end_date'] = datetime.fromisoformat(
-                    end_date_obj['iso'].replace('Z', '+00:00')
-                ).date()
-            except Exception:
-                pass
+        end = parse_parse_date(api_data.get('endDate'))
+        if end:
+            data['end_date'] = end.date()
 
         # Get club/location from clubObject
         club_obj = api_data.get('clubObject', {})
@@ -785,10 +665,7 @@ return Array.from(out);
     @staticmethod
     def _extract_placement(text):
         """Extract numeric placement from text"""
-        # Remove common suffixes and extract number
-        text = text.replace('st', '').replace('nd', '').replace('rd', '').replace('th', '')
-        match = re.search(r'(\d+)', text)
-        return int(match.group(1)) if match else None
+        return extract_placement(text)
 
 
 # One scraper at a time: a second concurrent run would double Chrome's
