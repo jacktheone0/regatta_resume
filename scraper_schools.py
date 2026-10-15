@@ -415,7 +415,7 @@ def run_full_hs_scraper(limit_schools=None, limit_sailors=None):
         logger.info("="*70)
 
         # Use user's roster_scraper
-        seasons = ["f25", "s25", "f24", "s24", "f23", "s23", "f22", "s22"]
+        seasons = ["f26", "s26", "f25", "s25", "f24", "s24", "f23", "s23", "f22", "s22"]
         rosters_df = roster_scraper.scrape_all_rosters(schools_df, seasons, source_type='hs')
 
         if rosters_df.empty:
@@ -482,7 +482,7 @@ def run_full_college_scraper(limit_schools=None, limit_sailors=None):
         logger.info("="*70)
 
         # Use user's roster_scraper with college source
-        seasons = ["f25", "s25", "f24", "s24", "f23", "s23", "f22", "s22"]
+        seasons = ["f26", "s26", "f25", "s25", "f24", "s24", "f23", "s23", "f22", "s22"]
         rosters_df = roster_scraper.scrape_all_rosters(schools_df, seasons, source_type='college')
 
         if rosters_df.empty:

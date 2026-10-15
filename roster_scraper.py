@@ -99,14 +99,14 @@ def scrape_all_rosters(schools_df: pd.DataFrame, seasons: List[str] = None, sour
 
     Args:
         schools_df: DataFrame with school information (must have 'School_Name' and either 'URL_Slug' or 'Normalized_Slug')
-        seasons: List of season codes to scrape (default: f25, s25, f24, s24, f23, s23, f22, s22)
+        seasons: List of season codes to scrape (default: f26, s26, f25, s25, f24, s24, f23, s23, f22, s22)
         source_type: 'hs' for high school or 'college' for college
 
     Returns:
         DataFrame with all sailor rosters
     """
     if seasons is None:
-        seasons = ["f25", "s25", "f24", "s24", "f23", "s23", "f22", "s22"]
+        seasons = ["f26", "s26", "f25", "s25", "f24", "s24", "f23", "s23", "f22", "s22"]
 
     all_sailors = []
     total_schools = len(schools_df)
