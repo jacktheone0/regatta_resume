@@ -48,8 +48,11 @@ links to the Actions tab, where **Run workflow** does the same job.
   does not follow daylight saving).
 - **Manually:** the repository's **Actions** tab → *Weekly ClubSpot
   scrape* → **Run workflow**. Optional inputs let you cap the number of
-  regattas (`limit`) or change the earliest year (`start_year`) — useful
-  for a quick test run with `limit: 5`.
+  regattas (`limit`) or set an earliest year (`start_year`; blank scrapes
+  all of ClubSpot's history) — useful for a quick test run with
+  `limit: 5`. Runs are bounded by time, not by a regatta count: each run
+  stops cleanly after `SCRAPER_TIME_BUDGET_MIN` minutes (300) and the
+  next run continues where it left off.
 - **From the admin panel:** the Run ClubSpot Scraper button, once the
   token above is configured.
 

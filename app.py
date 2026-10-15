@@ -993,12 +993,12 @@ def init_db():
 @app.cli.command()
 @click.option('--limit', type=int, default=None,
               help='Max regattas to fetch from the API (default: all)')
-@click.option('--start-year', type=int, default=2024,
-              help='Only scrape regattas from this year onwards')
+@click.option('--start-year', type=int, default=None,
+              help='Only scrape regattas from this year onwards (default: no floor)')
 def scrape(limit, start_year):
     """Run the ClubSpot scraper (entry point for the GitHub Actions job)"""
     from scraper import run_scraper
-    print(f"Starting scraper (limit={limit or 'none'}, start_year={start_year})...")
+    print(f"Starting scraper (limit={limit or 'none'}, start_year={start_year or 'none'})...")
     stats = run_scraper(limit=limit, start_year=start_year)
     print(f"Scraping complete! Stats: {stats}")
 

@@ -278,13 +278,15 @@ class ClubspotScraper:
                         f"(started, endDate not yet reached) to a later run")
         return finished
 
-    def scrape_all_regattas(self, limit=None, start_year=2024):
+    def scrape_all_regattas(self, limit=None, start_year=None):
         """
-        Main entry point: scrape all available regattas
+        Main entry point: scrape every finished regatta that has no stored
+        results yet, newest first.
 
         Args:
-            limit: Maximum number of regattas to scrape
-            start_year: Only scrape regattas from this year onwards (default: 2024)
+            limit: Maximum number of regattas to fetch from the API
+            start_year: Only scrape regattas from this year onwards
+                        (default: no floor -- everything ClubSpot has)
         """
         # A crashed or hung run leaves its row 'running' forever; mark such
         # rows failed so they can't confuse stop requests or the admin UI
@@ -335,9 +337,15 @@ class ClubspotScraper:
             if used_mb is not None and limit_mb:
                 logger.info(f"Memory at start: {used_mb:.0f}MB used of {limit_mb:.0f}MB limit")
 
-            # Bound each run; skipped-regatta logic makes the next run
-            # continue where this one stopped
-            max_per_run = int(os.environ.get('SCRAPER_MAX_REGATTAS_PER_RUN', '300'))
+            # Bound each run by wall-clock time, not a regatta count: on
+            # GitHub Actions the real limit is the job timeout, and stopping
+            # cleanly a little before it keeps the run log and job summary
+            # intact. Whatever is left is picked up by the next run. 0 = no
+            # budget.
+            budget_min = float(os.environ.get('SCRAPER_TIME_BUDGET_MIN', '300'))
+            run_started = time.monotonic()
+            if budget_min:
+                logger.info(f"Time budget for this run: {budget_min:.0f} minutes")
 
             # Fail fast if Chrome can't start (e.g. not installed on this
             # host): every regatta needs it, and swallowing the error
@@ -370,8 +378,13 @@ class ClubspotScraper:
                     regatta_id = regatta_data.get('objectId')
                     regatta_name = regatta_data.get('name', 'Unknown')
 
-                    if max_per_run and self.stats['regattas_scraped'] >= max_per_run:
-                        stopped_early = f"Reached the per-run cap of {max_per_run} regattas"
+                    elapsed_min = (time.monotonic() - run_started) / 60
+                    if budget_min and elapsed_min >= budget_min:
+                        stopped_early = (
+                            f"Reached the time budget of {budget_min:.0f} minutes "
+                            f"after {self.stats['regattas_scraped']} regattas "
+                            f"({len(regattas_data) - idx + 1} still unscraped)"
+                        )
                         break
 
                     # Memory watchdog: restart Chrome above the soft
@@ -673,13 +686,14 @@ class ClubspotScraper:
 _run_lock = Lock()
 
 
-def run_scraper(limit=None, start_year=2024):
+def run_scraper(limit=None, start_year=None):
     """
     Convenience function to run the scraper
 
     Args:
-        limit: Max regattas to scrape (default: all available)
-        start_year: Only scrape regattas from this year onwards (default: 2024)
+        limit: Max regattas to fetch from the API (default: all available)
+        start_year: Only scrape regattas from this year onwards
+                    (default: no floor -- everything ClubSpot has)
     """
     if not _run_lock.acquire(blocking=False):
         logger.warning("Scraper is already running in this process; not starting another")

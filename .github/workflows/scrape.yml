@@ -18,9 +18,9 @@ on:
         required: false
         type: string
       start_year:
-        description: 'Only scrape regattas from this year onwards'
+        description: 'Only scrape regattas from this year onwards (blank = all of ClubSpot history)'
         required: false
-        default: '2024'
+        default: ''
         type: string
 
 # Never let two scrapes run at once: they would fight over the same regattas
@@ -40,8 +40,11 @@ jobs:
       FLASK_ENV: production
       # Importing app.py must not start the in-process APScheduler here
       SCRAPER_ENABLED: 'false'
-      # Memory is not the constraint on a runner, wall-clock time is
-      SCRAPER_MAX_REGATTAS_PER_RUN: '1000'
+      # No regatta cap: the run is bounded by wall-clock time instead. It
+      # stops cleanly at this many minutes (under timeout-minutes above, so
+      # the run log is finalized and the summary step still runs); the next
+      # run continues where it left off.
+      SCRAPER_TIME_BUDGET_MIN: '300'
       SECRET_KEY: unused-by-the-scraper
 
     steps:
@@ -78,7 +81,7 @@ jobs:
         run: |
           flask scrape \
             ${{ inputs.limit && format('--limit {0}', inputs.limit) || '' }} \
-            --start-year ${{ inputs.start_year || '2024' }}
+            ${{ inputs.start_year && format('--start-year {0}', inputs.start_year) || '' }}
 
       - name: Summarize the run
         if: always()
