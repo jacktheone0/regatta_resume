@@ -289,8 +289,38 @@ class ScraperLog(db.Model):
     results_added = db.Column(db.Integer, default=0)
     error_message = db.Column(db.Text)
 
+    # Run accounting for the backlog drain (ClubSpot runs on GitHub Actions)
+    regattas_listed = db.Column(db.Integer)     # what the API listed
+    regattas_skipped = db.Column(db.Integer)    # already scraped or checked empty
+    regattas_remaining = db.Column(db.Integer)  # left unscraped when the run stopped
+    regattas_empty = db.Column(db.Integer)      # visited this run, no results posted
+    duration_seconds = db.Column(db.Integer)
+
     def __repr__(self):
         return f'<ScraperLog {self.started_at} - {self.status}>'
+
+
+class ClubspotRegattaCheck(db.Model):
+    """
+    Every ClubSpot regatta the scraper has looked at, results or not.
+
+    Regattas with results are stored in `regattas`; the ones with nothing
+    posted are not, so without this table every run would re-visit every
+    empty regatta in ClubSpot's history. Recurring runs re-check an empty
+    regatta only while results could still appear (it ended recently).
+    """
+    __tablename__ = 'clubspot_regatta_checks'
+
+    external_id = db.Column(db.String(32), primary_key=True)  # ClubSpot objectId
+    name = db.Column(db.String(300))
+    start_date = db.Column(db.Date)
+    end_date = db.Column(db.Date)
+    last_checked_at = db.Column(db.DateTime)
+    result_count = db.Column(db.Integer, nullable=False, default=0)
+    check_count = db.Column(db.Integer, nullable=False, default=0)
+
+    def __repr__(self):
+        return f'<ClubspotRegattaCheck {self.external_id} results={self.result_count}>'
 
 
 class ScraperLogEntry(db.Model):

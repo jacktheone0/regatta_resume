@@ -494,7 +494,10 @@ ADMIN_BROWSABLE_TABLES = {
     'schools': ['id', 'name', 'district', 'source', 'url_slug', 'full_url',
                 'created_at', 'updated_at'],
     'scraper_logs': ['id', 'started_at', 'completed_at', 'status', 'regattas_scraped',
-                     'sailors_added', 'results_added', 'error_message'],
+                     'sailors_added', 'results_added', 'regattas_listed', 'regattas_skipped',
+                     'regattas_remaining', 'regattas_empty', 'duration_seconds', 'error_message'],
+    'clubspot_regatta_checks': ['external_id', 'name', 'start_date', 'end_date',
+                                'last_checked_at', 'result_count', 'check_count'],
     'scraper_log_entries': ['id', 'created_at', 'level', 'message', 'step', 'section',
                             'season', 'source'],
 }

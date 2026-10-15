@@ -1,4 +1,4 @@
-name: Weekly ClubSpot scrape
+name: ClubSpot scrape
 
 # The ClubSpot scraper needs Chrome and ~1GB of RAM, which does not fit in
 # the 512MB Render container it used to share with the web app (it OOM-killed
@@ -8,9 +8,13 @@ name: Weekly ClubSpot scrape
 
 on:
   schedule:
-    # Monday 06:00 UTC = Sunday 22:00 PST / 23:00 PDT.
-    # GitHub cron is UTC only and does not follow daylight saving.
-    - cron: '0 6 * * 1'
+    # DAILY at 06:00 UTC while the historical backlog (~19,000 regattas) is
+    # being drained: each run is bounded by SCRAPER_TIME_BUDGET_MIN and
+    # continues where the last one stopped. Once the run summary reports
+    # "backlog drained", this can go back to weekly: '0 6 * * 1'
+    # (Monday 06:00 UTC = Sunday 22:00 PST / 23:00 PDT). GitHub cron is UTC
+    # only and does not follow daylight saving.
+    - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
       limit:
@@ -95,14 +99,27 @@ jobs:
               if not log:
                   print('No scraper log rows found.')
               else:
+                  remaining = log.regattas_remaining or 0
+                  minutes = (log.duration_seconds or 0) // 60
                   lines = [
                       f'**Status:** {log.status}',
-                      f'**Regattas scraped:** {log.regattas_scraped}',
-                      f'**Sailors added:** {log.sailors_added}',
+                      f'**Regattas listed by the API:** {log.regattas_listed}',
+                      f'**Skipped (already scraped, or checked empty and not due):** {log.regattas_skipped}',
+                      f'**Visited this run:** {log.regattas_scraped} '
+                      f'({log.regattas_empty or 0} had no results posted)',
                       f'**Results added:** {log.results_added}',
+                      f'**Sailors added:** {log.sailors_added}',
+                      f'**Time used:** {minutes} min',
+                      f'**Still unscraped (backlog):** {remaining}',
                   ]
                   if log.error_message:
                       lines.append(f'**Note:** {log.error_message}')
+                  if log.status == 'completed' and remaining == 0:
+                      lines.append('**Catch-up status:** backlog drained. The daily schedule can '
+                                   'go back to weekly -- see .github/SCRAPER_SETUP.md.')
+                  else:
+                      lines.append('**Catch-up status:** backlog remains; the next scheduled '
+                                   'run continues from here.')
                   summary = '\n\n'.join(lines)
                   print(summary)
                   path = os.environ.get('GITHUB_STEP_SUMMARY')

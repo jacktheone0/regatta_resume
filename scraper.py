@@ -3,8 +3,8 @@ Web scraper for theclubspot.com regatta results
 Uses Parse API to fetch all regatta IDs, then Selenium to scrape results
 """
 import requests
-from datetime import datetime, timezone
-from models import db, Sailor, Regatta, Result, ScraperLog
+from datetime import datetime, timedelta, timezone
+from models import db, Sailor, Regatta, Result, ScraperLog, ClubspotRegattaCheck
 from scraper_logging import attach_db_log_handler
 from clubspot_common import (HARVEST_JS, extract_placement, fetch_regattas,
                              parse_parse_date, parse_result_row, split_by_completion)
@@ -192,6 +192,10 @@ class ClubspotScraper:
     # Chrome accumulates memory across page loads; restart it periodically
     RESTART_DRIVER_EVERY = 20
 
+    # An empty regatta is re-checked at most this often while it is still
+    # inside the re-check window (SCRAPER_RECHECK_EMPTY_DAYS after it ended)
+    RECHECK_EMPTY_INTERVAL_DAYS = 2
+
     def _memory_state(self):
         """('ok'|'high'|'critical', used_mb, limit_mb); 'ok' when unknown"""
         used, limit = container_memory_mb()
@@ -216,6 +220,7 @@ class ClubspotScraper:
         })
         self.stats = {
             'regattas_scraped': 0,
+            'regattas_empty': 0,
             'sailors_added': 0,
             'results_added': 0
         }
@@ -239,6 +244,17 @@ class ClubspotScraper:
             logger.error(f"Error checking stop status: {e}")
 
         return False
+
+    def _write_run_counters(self, log, total_listed, skipped, remaining, run_started):
+        """Run accounting the job summary and admin panel report"""
+        log.regattas_scraped = self.stats['regattas_scraped']
+        log.sailors_added = self.stats['sailors_added']
+        log.results_added = self.stats['results_added']
+        log.regattas_listed = total_listed
+        log.regattas_skipped = skipped
+        log.regattas_remaining = remaining
+        log.regattas_empty = self.stats['regattas_empty']
+        log.duration_seconds = int(time.monotonic() - run_started)
 
     def fetch_all_regatta_ids(self, limit=None, start_year=None):
         """
@@ -328,15 +344,43 @@ class ClubspotScraper:
                 .filter(Regatta.external_id.isnot(None))
                 .distinct()
             }
+
+            # Regattas already visited and found empty are re-checked only
+            # while results could still appear -- within the re-check window
+            # after they ended -- and not more often than the interval.
+            # Without this, every run would re-visit every empty regatta in
+            # ClubSpot's history.
+            recheck_window_days = int(os.environ.get('SCRAPER_RECHECK_EMPTY_DAYS', '30'))
+            today = datetime.utcnow().date()
+            recheck_due_before = datetime.utcnow() - timedelta(days=self.RECHECK_EMPTY_INTERVAL_DAYS)
+            checked_empty = {
+                check.external_id: check
+                for check in ClubspotRegattaCheck.query.filter_by(result_count=0).all()
+            }
+
+            def still_worth_checking(regatta):
+                check = checked_empty.get(regatta.get('objectId'))
+                if check is None:
+                    return True
+                ended = check.end_date or check.start_date
+                if ended and (today - ended).days > recheck_window_days:
+                    return False
+                if check.last_checked_at and check.last_checked_at > recheck_due_before:
+                    return False
+                return True
+
             # Filter upfront instead of skipping inside the loop: the loop
             # previously ran a stop-check DB query per skipped regatta,
             # thousands of silent queries before any visible progress
             total_listed = len(regattas_data)
-            regattas_data = [r for r in regattas_data
-                             if r.get('objectId') not in already_scraped]
-            skipped = total_listed - len(regattas_data)
-            logger.info(f"{skipped} of {total_listed} regattas already have results; "
-                        f"{len(regattas_data)} left to scrape")
+            unscraped = [r for r in regattas_data if r.get('objectId') not in already_scraped]
+            skipped_results = total_listed - len(unscraped)
+            regattas_data = [r for r in unscraped if still_worth_checking(r)]
+            skipped_checked = len(unscraped) - len(regattas_data)
+            skipped = skipped_results + skipped_checked
+            logger.info(f"{total_listed} regattas listed: {skipped_results} already have results, "
+                        f"{skipped_checked} checked empty and not due again, "
+                        f"{len(regattas_data)} to scrape")
 
             used_mb, limit_mb = container_memory_mb()
             if used_mb is not None and limit_mb:
@@ -367,15 +411,15 @@ class ClubspotScraper:
 
             scraped_since_restart = 0
             stopped_early = None
+            remaining = 0
             try:
                 for idx, regatta_data in enumerate(regattas_data, 1):
                     # Check if user requested stop
                     if self.should_stop():
                         log.status = 'cancelled'
                         log.completed_at = datetime.utcnow()
-                        log.regattas_scraped = self.stats['regattas_scraped']
-                        log.sailors_added = self.stats['sailors_added']
-                        log.results_added = self.stats['results_added']
+                        self._write_run_counters(log, total_listed, skipped,
+                                                 len(regattas_data) - idx + 1, run_started)
                         db.session.commit()
                         logger.info(f"Scraper cancelled by user after {idx-1} regattas")
                         return self.stats
@@ -385,10 +429,11 @@ class ClubspotScraper:
 
                     elapsed_min = (time.monotonic() - run_started) / 60
                     if budget_min and elapsed_min >= budget_min:
+                        remaining = len(regattas_data) - idx + 1
                         stopped_early = (
                             f"Reached the time budget of {budget_min:.0f} minutes "
                             f"after {self.stats['regattas_scraped']} regattas "
-                            f"({len(regattas_data) - idx + 1} still unscraped)"
+                            f"({remaining} still unscraped)"
                         )
                         break
 
@@ -407,6 +452,7 @@ class ClubspotScraper:
                         scraped_since_restart = 0
                         state, used_mb, limit_mb = self._memory_state()
                     if state == 'critical':
+                        remaining = len(regattas_data) - idx + 1
                         stopped_early = (
                             f"Stopped to stay under the memory cap "
                             f"({used_mb:.0f}MB used of {limit_mb:.0f}MB "
@@ -450,15 +496,18 @@ class ClubspotScraper:
 
             log.status = 'completed'
             log.completed_at = datetime.utcnow()
-            log.regattas_scraped = self.stats['regattas_scraped']
-            log.sailors_added = self.stats['sailors_added']
-            log.results_added = self.stats['results_added']
+            self._write_run_counters(log, total_listed, skipped, remaining, run_started)
             if stopped_early:
                 log.error_message = f"{stopped_early}; remaining regattas will be picked up on the next run"
                 logger.info(f"Run stopped early: {stopped_early}")
             db.session.commit()
 
-            logger.info(f"Scraping complete! Skipped {skipped} already-scraped regattas. Stats: {self.stats}")
+            logger.info(
+                f"Scraping complete in {log.duration_seconds // 60} min: {total_listed} listed, "
+                f"{skipped} skipped, {self.stats['regattas_scraped']} visited "
+                f"({self.stats['regattas_empty']} with no results posted), "
+                f"{self.stats['results_added']} results added, {remaining} still unscraped"
+            )
             return self.stats
 
         except Exception as e:
@@ -488,7 +537,12 @@ class ClubspotScraper:
             results_url = f"{url}/results?list_view=true"
             results_data = self._scrape_results_with_selenium(results_url, regatta_id, driver)
 
+            # Remember the visit either way, so empties are not re-visited
+            # on every future run
+            self._record_check(regatta_id, api_data, len(results_data))
+
             if not results_data:
+                self.stats['regattas_empty'] += 1
                 logger.info(f"No results posted for {regatta_id}; not storing a regatta row")
                 return
 
@@ -679,6 +733,27 @@ class ClubspotScraper:
             logger.debug(f"Added new regatta: {data.get('name')}")
 
         return regatta
+
+    def _record_check(self, regatta_id, api_data, result_count):
+        """Upsert the visit record for a regatta; never lets a failure stop the run"""
+        api_data = api_data or {}
+        try:
+            check = db.session.get(ClubspotRegattaCheck, regatta_id)
+            if check is None:
+                check = ClubspotRegattaCheck(external_id=regatta_id, check_count=0)
+            start = parse_parse_date(api_data.get('startDate'))
+            end = parse_parse_date(api_data.get('endDate'))
+            check.name = api_data.get('name') or check.name
+            check.start_date = start.date() if start else check.start_date
+            check.end_date = end.date() if end else check.end_date
+            check.last_checked_at = datetime.utcnow()
+            check.result_count = result_count
+            check.check_count = (check.check_count or 0) + 1
+            db.session.add(check)
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f"Could not record the check for {regatta_id}: {e}")
 
     @staticmethod
     def _extract_placement(text):

@@ -43,11 +43,15 @@ links to the Actions tab, where **Run workflow** does the same job.
 
 ## Running it
 
-- **Automatically:** Mondays at 06:00 UTC, which is Sunday 10:00 PM
-  Pacific in winter and 11:00 PM in summer (GitHub cron is UTC only and
-  does not follow daylight saving).
-- **Manually:** the repository's **Actions** tab → *Weekly ClubSpot
-  scrape* → **Run workflow**. Optional inputs let you cap the number of
+- **Automatically:** daily at 06:00 UTC while the historical backlog is
+  being drained (each run is bounded by `SCRAPER_TIME_BUDGET_MIN` and
+  continues where the last one stopped). Once a run summary says
+  **backlog drained**, switch the cron in `scrape.yml` back to weekly:
+  `0 6 * * 1` (Monday 06:00 UTC = Sunday 10:00 PM Pacific in winter,
+  11:00 PM in summer; GitHub cron is UTC only and does not follow
+  daylight saving).
+- **Manually:** the repository's **Actions** tab → *ClubSpot scrape* →
+  **Run workflow**. Optional inputs let you cap the number of
   regattas (`limit`) or set an earliest year (`start_year`; blank scrapes
   all of ClubSpot's history) — useful for a quick test run with
   `limit: 5`. Runs are bounded by time, not by a regatta count: each run
@@ -77,3 +81,35 @@ between regattas and exits cleanly.
 - `SCRAPER_ENABLED` stays `false` on Render so the web service never
   starts an in-process scrape. Setting it `true` locally restores the old
   behaviour for development.
+
+## How the backlog drain works
+
+Each run lists every finished regatta ClubSpot has (paged, newest
+first), skips the ones that already have results, skips the ones it has
+already visited and found empty (re-checking those only for
+`SCRAPER_RECHECK_EMPTY_DAYS` — 30 — after they ended, at most every two
+days), and scrapes the rest until the time budget runs out. Every visit
+is recorded in `clubspot_regatta_checks`, so an empty regatta is never
+re-visited forever. The run summary reports what was listed, skipped,
+visited, added, and how many regattas are **still unscraped** — that
+number is the backlog, and it shrinks run by run.
+
+## Rolling back
+
+The state of `main` before the backlog-drain changes is kept on the
+branch `rollback/pre-backlog-drain`. The database must be downgraded
+**before** the old code is deployed, because Render runs
+`flask db upgrade` on every deploy and the old code does not know
+migration 006.
+
+```bash
+# from a checkout of the CURRENT main (it has migration 006)
+export DATABASE_URL='<the Neon connection string>'
+scripts/rollback_backlog_drain.sh        # downgrades the DB, resets local main
+git push --force-with-lease origin main  # publishes the rollback
+```
+
+The downgrade drops `clubspot_regatta_checks` and the run-counter columns
+on `scraper_logs`; scraped regattas, sailors and results are untouched.
+Render redeploys the old code from `main`, and the workflow file on
+`main` goes back to the weekly schedule with it.
