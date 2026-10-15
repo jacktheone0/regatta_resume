@@ -87,27 +87,70 @@ def build_regatta_where(start_year=None, before=None):
     return where
 
 
-def fetch_regattas(start_year=None, limit=None, past_only=True, now=None, timeout=60):
-    """
-    Newest-first regatta list from the Parse API.
+# Parse Server's conventional maximum rows per query. A single request for
+# more is silently truncated to this, which is how a ~19,000-regatta
+# catalogue looked like a few thousand: the list must be paged.
+PAGE_SIZE = 1000
 
-    Returns (regattas, total_available). Raises requests exceptions on
-    network or HTTP failure; callers decide how to report them.
+# A deterministic order across pages: regattas sharing a startDate would
+# otherwise shuffle between requests and be skipped or duplicated
+PAGE_ORDER = '-startDate,objectId'
+
+
+def fetch_regattas(start_year=None, limit=None, past_only=True, now=None,
+                   timeout=60, page_size=PAGE_SIZE, progress=None):
+    """
+    The full regatta list from the Parse API, newest first, fetched in
+    pages of page_size until a short page says there is no more.
+
+    limit caps the total returned (None = everything). progress, if given,
+    is called with a one-line status per page. Returns
+    (regattas, total_matching) where total_matching is the API's own count
+    for the same filters. Raises requests exceptions on network or HTTP
+    failure; callers decide how to report them.
     """
     now = now or datetime.now(timezone.utc)
-    data = dict(
-        PARSE_CREDENTIALS,
-        where=build_regatta_where(start_year, before=now if past_only else None),
-        include='clubObject',
-        keys=REGATTA_KEYS,
-        count=1,
-        limit=limit or 15000,
-        order='-startDate',
-    )
-    response = requests.post(PARSE_API_URL, headers=PARSE_HEADERS, json=data, timeout=timeout)
-    response.raise_for_status()
-    payload = response.json()
-    return payload.get('results', []), payload.get('count', 0)
+    where = build_regatta_where(start_year, before=now if past_only else None)
+
+    regattas, seen = [], set()
+    total_matching = None
+    skip = 0
+    page_number = 0
+    while True:
+        want = page_size if limit is None else min(page_size, limit - len(regattas))
+        if want <= 0:
+            break
+
+        data = dict(PARSE_CREDENTIALS, where=where, include='clubObject', keys=REGATTA_KEYS,
+                    limit=want, skip=skip, order=PAGE_ORDER)
+        if total_matching is None:
+            data['count'] = 1  # only the first page needs the total
+        response = requests.post(PARSE_API_URL, headers=PARSE_HEADERS, json=data, timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+        page = payload.get('results', [])
+        if total_matching is None:
+            total_matching = payload.get('count', 0) or 0
+        page_number += 1
+
+        fresh = [r for r in page if r.get('objectId') and r['objectId'] not in seen]
+        seen.update(r['objectId'] for r in fresh)
+        regattas.extend(fresh)
+        if progress:
+            progress(f"Regatta list page {page_number}: {len(page)} rows "
+                     f"({len(regattas)} fetched of {total_matching} matching)")
+
+        # A page shorter than requested is NOT the end: a server that caps
+        # page size below what we asked returns short pages every time.
+        # Stop only on an empty page, on reaching the server's own count,
+        # or if a page brought nothing new (unstable ordering).
+        if not page or not fresh:
+            break
+        skip += len(page)
+        if total_matching and len(regattas) >= total_matching:
+            break
+
+    return regattas, total_matching or 0
 
 
 def fetch_regatta_by_id(regatta_id, timeout=60):

@@ -231,7 +231,8 @@ class ScraperGUI(tk.Tk):
         def task():
             try:
                 self.log("Querying ClubSpot Parse API for newest regattas...")
-                regattas, total = fetch_regattas(year, limit=5, past_only=past_only)
+                regattas, total = fetch_regattas(year, limit=5, past_only=past_only,
+                                                 progress=self.log)
                 self.log(f"API OK -- {total} regattas available. Newest:")
                 _, in_progress, future = split_by_completion(regattas)
                 for r in regattas:
@@ -282,7 +283,8 @@ class ScraperGUI(tk.Tk):
             try:
                 self.log(f"Fetching {limit} newest "
                          f"{'finished ' if past_only else ''}regattas...")
-                regattas, total = fetch_regattas(year, limit=limit, past_only=past_only)
+                regattas, total = fetch_regattas(year, limit=limit, past_only=past_only,
+                                                 progress=self.log)
                 if past_only:
                     # Same second-stage check the server does: drop anything
                     # the API's date bound let through

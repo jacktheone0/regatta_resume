@@ -255,13 +255,18 @@ class ClubspotScraper:
         now = datetime.now(timezone.utc)
 
         try:
-            regattas, total_count = fetch_regattas(
-                start_year=start_year, limit=limit, past_only=True, now=now)
+            regattas, total_matching = fetch_regattas(
+                start_year=start_year, limit=limit, past_only=True, now=now,
+                progress=logger.info)
         except Exception as e:
             logger.error(f"Failed to fetch regatta IDs from Parse API: {e}")
             return []
 
-        logger.info(f"Parse API returned {len(regattas)} regattas (total available: {total_count})")
+        logger.info(f"Parse API returned {len(regattas)} regattas "
+                    f"({total_matching} match the query filters)")
+        if limit is None and total_matching and len(regattas) < total_matching:
+            logger.warning(f"The list ended after {len(regattas)} of {total_matching} matching "
+                           f"regattas; the API may be capping skip or dropping rows")
 
         # Check the API honored the startDate bound instead of trusting it:
         # that cannot be verified offline, so every run reports what it got
