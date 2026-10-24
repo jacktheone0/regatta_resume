@@ -112,8 +112,12 @@ requests or `SCRAPER_ENUM_TIME_BUDGET_MIN` (20) minutes on this, with a
 `Retry-After` and retries with exponential backoff, and only after six
 failed attempts does the walk stop (markers saved, next run resumes).
 Every run also records the step-0 filter counts and reads the sitemap,
-and the run summary shows both. `SCRAPER_INCLUDE_ARCHIVED=true` drops
-the `archived != true` filter if the counts show it hides real history.
+and the run summary shows both. Measured 2026-10-24: 19,730 regattas in
+total, 12,144 public, 10,798 public and not archived; the non-public
+rest are drafts, membership forms and ClubSpot's own test clubs, with no
+results. `SCRAPER_INCLUDE_ARCHIVED=true` (the setting in use) drops the
+`archived != true` filter so archived public regattas -- real past
+events -- are catalogued too. The sitemap does not exist (404).
 
 **2. Scraping** visits catalogue rows that are due -- finished, never
 visited, or visited-but-empty within `SCRAPER_RECHECK_EMPTY_DAYS` (30)

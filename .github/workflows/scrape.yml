@@ -58,7 +58,11 @@ jobs:
       SCRAPER_ENUM_TIME_BUDGET_MIN: '20'
       SCRAPER_ENUM_DELAY_SEC: '0.5'
       SCRAPER_FORWARD_WINDOW_DAYS: '180'
-      SCRAPER_INCLUDE_ARCHIVED: 'false'
+      # Step-0 counts (2026-10-24): 19,730 regattas total, 12,144 public,
+      # 10,798 public and not archived. Non-public entries are drafts, forms
+      # and test clubs with no results; archived public ones are real past
+      # events, so they are included.
+      SCRAPER_INCLUDE_ARCHIVED: 'true'
       SECRET_KEY: unused-by-the-scraper
 
     steps:
