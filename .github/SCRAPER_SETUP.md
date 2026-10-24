@@ -84,15 +84,52 @@ between regattas and exits cleanly.
 
 ## How the backlog drain works
 
-Each run lists every finished regatta ClubSpot has (paged, newest
-first), skips the ones that already have results, skips the ones it has
-already visited and found empty (re-checking those only for
-`SCRAPER_RECHECK_EMPTY_DAYS` — 30 — after they ended, at most every two
-days), and scrapes the rest until the time budget runs out. Every visit
-is recorded in `clubspot_regatta_checks`, so an empty regatta is never
-re-visited forever. The run summary reports what was listed, skipped,
-visited, added, and how many regattas are **still unscraped** — that
-number is the backlog, and it shrinks run by run.
+Each run has two phases.
+
+**1. Enumeration** (`clubspot_catalog.py`) keeps a catalogue of every
+regatta ID ever seen in `clubspot_regatta_checks`. It never pages with
+`skip`: the catalogue is walked one calendar quarter at a time
+(`startDate` between X and Y, limit 1000), and a window that comes back
+full is split in half and re-queried until no window is full. Two
+markers in `scraper_state` bound the enumerated range and are updated
+after every completed window, so an interrupted run resumes exactly
+where it stopped:
+
+- *Forward catch-up* first: from today plus a forward window
+  (`SCRAPER_FORWARD_WINDOW_DAYS`, 180, so upcoming regattas enter the
+  catalogue before they happen) back to the newest enumerated window.
+  The most recent `SCRAPER_RECENT_RESCAN_DAYS` (60) are always re-walked
+  because regattas get created or re-dated inside windows that were
+  already enumerated; a `createdAt` query also picks up anything created
+  since the last run wherever its date falls.
+- *Historical backfill* second: from the oldest enumerated window further
+  back, until `SCRAPER_ENUM_FLOOR_DATE` (2016-01-01) or
+  `SCRAPER_ENUM_EMPTY_QUARTERS_DONE` (8) consecutive empty quarters.
+
+Each run spends at most `SCRAPER_ENUM_REQUEST_BUDGET` (300) listing
+requests or `SCRAPER_ENUM_TIME_BUDGET_MIN` (20) minutes on this, with a
+`SCRAPER_ENUM_DELAY_SEC` (0.5) pause between requests; a 429 waits for
+`Retry-After` and retries with exponential backoff, and only after six
+failed attempts does the walk stop (markers saved, next run resumes).
+Every run also records the step-0 filter counts and reads the sitemap,
+and the run summary shows both. Measured 2026-10-24: 19,730 regattas in
+total, 12,144 public, 10,798 public and not archived; the non-public
+rest are drafts, membership forms and ClubSpot's own test clubs, with no
+results. `SCRAPER_INCLUDE_ARCHIVED=true` (the setting in use) drops the
+`archived != true` filter so archived public regattas -- real past
+events -- are catalogued too. The sitemap does not exist (404).
+
+**2. Scraping** visits catalogue rows that are due -- finished, never
+visited, or visited-but-empty within `SCRAPER_RECHECK_EMPTY_DAYS` (30)
+of their end date and not checked in the last two days -- newest first,
+until the run's time budget. Regattas with results are also stored in
+`regattas`; empty ones live only in the catalogue, so nothing is ever
+re-visited forever. The summary's **still unscraped** number is the
+backlog, and it shrinks run by run.
+
+A regatta ID list from elsewhere (for example the probe script's
+`--save` output from the sitemap) merges into the same catalogue with
+`flask import-regatta-ids FILE`.
 
 ## Rolling back
 

@@ -6,8 +6,9 @@ import requests
 from datetime import datetime, timedelta, timezone
 from models import db, Sailor, Regatta, Result, ScraperLog, ClubspotRegattaCheck
 from scraper_logging import attach_db_log_handler
-from clubspot_common import (HARVEST_JS, extract_placement, fetch_regattas,
-                             parse_parse_date, parse_result_row, split_by_completion)
+from clubspot_common import (HARVEST_JS, extract_placement, fetch_regatta_by_id,
+                             parse_parse_date, parse_result_row)
+import clubspot_catalog as catalog
 import gc
 import logging
 import os
@@ -258,56 +259,24 @@ class ClubspotScraper:
 
     def fetch_all_regatta_ids(self, limit=None, start_year=None):
         """
-        Fetch all regatta IDs from the Parse API
-
-        Args:
-            limit: Maximum number of regatta IDs to fetch (default: all)
-            start_year: Only fetch regattas from this year onwards (e.g., 2024)
-
-        Returns:
-            List of dicts with regatta metadata: objectId, name, startDate, clubObject
+        Kept for callers that still expect a list: the catalogue rows that
+        are due, as API-shaped dicts. Enumeration itself lives in
+        clubspot_catalog.update_catalog.
         """
-        logger.info("Fetching regatta IDs from Parse API...")
-        now = datetime.now(timezone.utc)
-
-        try:
-            regattas, total_matching = fetch_regattas(
-                start_year=start_year, limit=limit, past_only=True, now=now,
-                progress=logger.info)
-        except Exception as e:
-            logger.error(f"Failed to fetch regatta IDs from Parse API: {e}")
-            return []
-
-        logger.info(f"Parse API returned {len(regattas)} regattas "
-                    f"({total_matching} match the query filters)")
-        if limit is None and total_matching and len(regattas) < total_matching:
-            logger.warning(f"The list ended after {len(regattas)} of {total_matching} matching "
-                           f"regattas; the API may be capping skip or dropping rows")
-
-        # Check the API honored the startDate bound instead of trusting it:
-        # that cannot be verified offline, so every run reports what it got
-        finished, in_progress, future = split_by_completion(regattas, now=now)
-        if regattas:
-            newest = parse_parse_date(regattas[0].get('startDate'))
-            logger.info(f"Newest startDate in batch: {newest.isoformat() if newest else '?'} "
-                        f"(now {now.isoformat()})")
-        if future:
-            logger.warning(f"API returned {len(future)} regattas that start in the future "
-                           f"despite the startDate bound; dropping them")
-        if in_progress:
-            logger.info(f"Deferring {len(in_progress)} regattas still in progress "
-                        f"(started, endDate not yet reached) to a later run")
-        return finished
+        due, _ = catalog.select_due(start_year=start_year, limit=limit)
+        return [{'objectId': c.external_id, 'name': c.name} for c in due]
 
     def scrape_all_regattas(self, limit=None, start_year=None):
         """
-        Main entry point: scrape every finished regatta that has no stored
-        results yet, newest first.
+        Main entry point: update the regatta catalogue (date-window walk,
+        see clubspot_catalog), then scrape every catalogued regatta that is
+        due -- finished, never visited (or empty and worth re-checking) --
+        newest first.
 
         Args:
-            limit: Maximum number of regattas to fetch from the API
+            limit: Maximum number of regattas to visit this run
             start_year: Only scrape regattas from this year onwards
-                        (default: no floor -- everything ClubSpot has)
+                        (default: no floor -- everything in the catalogue)
         """
         # A crashed or hung run leaves its row 'running' forever; mark such
         # rows failed so they can't confuse stop requests or the admin UI
@@ -326,61 +295,41 @@ class ClubspotScraper:
 
         try:
             logger.info("Starting scraper...")
+            run_started = time.monotonic()
 
-            # Fetch regatta IDs from Parse API
-            regattas_data = self.fetch_all_regatta_ids(limit=limit, start_year=start_year)
+            # Phase 1: bring the catalogue up to date -- a date-window walk
+            # that never uses skip (clubspot_catalog). A failure here is not
+            # fatal: the catalogue built by earlier runs is still there.
+            try:
+                catalog.update_catalog(logger.info, now=datetime.now(timezone.utc))
+            except Exception as e:
+                logger.error(f"Catalogue update failed: {e}; scraping from the existing catalogue")
+
+            synced = catalog.sync_results_into_catalog()
+            if synced:
+                logger.info(f"Marked {synced} catalogue rows as scraped from results already stored")
+
+            # Phase 2: what is due. Regattas with results are skipped; empties
+            # are re-checked only inside the re-check window after they ended
+            # and not more often than the interval, so a run never re-visits
+            # every empty regatta in ClubSpot's history.
+            recheck_window_days = int(os.environ.get('SCRAPER_RECHECK_EMPTY_DAYS', '30'))
+            regattas_data, catalog_counts = catalog.select_due(
+                recheck_window_days=recheck_window_days,
+                recheck_interval_days=self.RECHECK_EMPTY_INTERVAL_DAYS,
+                start_year=start_year, limit=limit)
+            total_listed = catalog_counts['catalog']
+            skipped = total_listed - len(regattas_data)
+            logger.info(f"Catalogue: {total_listed} regattas, {catalog_counts['with_results']} "
+                        f"with results stored, {len(regattas_data)} due to scrape now")
 
             if not regattas_data:
-                logger.warning("No regattas found to scrape!")
+                logger.info("Nothing due to scrape")
                 log.status = 'completed'
                 log.completed_at = datetime.utcnow()
+                self._write_run_counters(log, total_listed, skipped, 0, run_started)
                 db.session.commit()
                 return self.stats
-
-            # Regattas that already have stored results don't need re-scraping
-            already_scraped = {
-                ext_id for (ext_id,) in db.session.query(Regatta.external_id)
-                .join(Result, Result.regatta_id == Regatta.id)
-                .filter(Regatta.external_id.isnot(None))
-                .distinct()
-            }
-
-            # Regattas already visited and found empty are re-checked only
-            # while results could still appear -- within the re-check window
-            # after they ended -- and not more often than the interval.
-            # Without this, every run would re-visit every empty regatta in
-            # ClubSpot's history.
-            recheck_window_days = int(os.environ.get('SCRAPER_RECHECK_EMPTY_DAYS', '30'))
-            today = datetime.utcnow().date()
-            recheck_due_before = datetime.utcnow() - timedelta(days=self.RECHECK_EMPTY_INTERVAL_DAYS)
-            checked_empty = {
-                check.external_id: check
-                for check in ClubspotRegattaCheck.query.filter_by(result_count=0).all()
-            }
-
-            def still_worth_checking(regatta):
-                check = checked_empty.get(regatta.get('objectId'))
-                if check is None:
-                    return True
-                ended = check.end_date or check.start_date
-                if ended and (today - ended).days > recheck_window_days:
-                    return False
-                if check.last_checked_at and check.last_checked_at > recheck_due_before:
-                    return False
-                return True
-
-            # Filter upfront instead of skipping inside the loop: the loop
-            # previously ran a stop-check DB query per skipped regatta,
-            # thousands of silent queries before any visible progress
-            total_listed = len(regattas_data)
-            unscraped = [r for r in regattas_data if r.get('objectId') not in already_scraped]
-            skipped_results = total_listed - len(unscraped)
-            regattas_data = [r for r in unscraped if still_worth_checking(r)]
-            skipped_checked = len(unscraped) - len(regattas_data)
-            skipped = skipped_results + skipped_checked
-            logger.info(f"{total_listed} regattas listed: {skipped_results} already have results, "
-                        f"{skipped_checked} checked empty and not due again, "
-                        f"{len(regattas_data)} to scrape")
 
             used_mb, limit_mb = container_memory_mb()
             if used_mb is not None and limit_mb:
@@ -392,9 +341,9 @@ class ClubspotScraper:
             # intact. Whatever is left is picked up by the next run. 0 = no
             # budget.
             budget_min = float(os.environ.get('SCRAPER_TIME_BUDGET_MIN', '300'))
-            run_started = time.monotonic()
             if budget_min:
-                logger.info(f"Time budget for this run: {budget_min:.0f} minutes")
+                logger.info(f"Time budget for this run: {budget_min:.0f} minutes "
+                            f"(enumeration already used {(time.monotonic() - run_started) / 60:.0f})")
 
             # Fail fast if Chrome can't start (e.g. not installed on this
             # host): every regatta needs it, and swallowing the error
@@ -424,8 +373,8 @@ class ClubspotScraper:
                         logger.info(f"Scraper cancelled by user after {idx-1} regattas")
                         return self.stats
 
-                    regatta_id = regatta_data.get('objectId')
-                    regatta_name = regatta_data.get('name', 'Unknown')
+                    regatta_id = regatta_data.external_id
+                    regatta_name = regatta_data.name or 'Unknown'
 
                     elapsed_min = (time.monotonic() - run_started) / 60
                     if budget_min and elapsed_min >= budget_min:
@@ -463,7 +412,7 @@ class ClubspotScraper:
                     logger.info(f"[{idx}/{len(regattas_data)}] Scraping: {regatta_name} ({regatta_id})")
 
                     try:
-                        self._scrape_regatta(regatta_id, regatta_data, driver)
+                        self._scrape_regatta(regatta_data, driver)
                         self.stats['regattas_scraped'] += 1
                         scraped_since_restart += 1
 
@@ -518,15 +467,16 @@ class ClubspotScraper:
             logger.error(f"Scraper failed: {e}")
             raise
 
-    def _scrape_regatta(self, regatta_id, api_data=None, driver=None):
+    def _scrape_regatta(self, check, driver):
         """
-        Scrape a single regatta by ID using Selenium
+        Scrape one catalogued regatta's results page with Selenium and store
+        what it finds.
 
         Args:
-            regatta_id: The clubspot regatta ID
-            api_data: Optional dict with regatta metadata from Parse API
+            check: the ClubspotRegattaCheck row (catalogue entry)
             driver: Shared Selenium driver (reused across regattas)
         """
+        regatta_id = check.external_id
         url = f"https://theclubspot.com/regatta/{regatta_id}"
 
         try:
@@ -539,24 +489,14 @@ class ClubspotScraper:
 
             # Remember the visit either way, so empties are not re-visited
             # on every future run
-            self._record_check(regatta_id, api_data, len(results_data))
+            self._record_check(check, len(results_data))
 
             if not results_data:
                 self.stats['regattas_empty'] += 1
                 logger.info(f"No results posted for {regatta_id}; not storing a regatta row")
                 return
 
-            if api_data:
-                regatta_metadata = self._parse_api_regatta_data(api_data, regatta_id, url)
-            else:
-                regatta_metadata = {
-                    'source_url': url,
-                    'external_id': regatta_id,
-                    'name': f'Regatta {regatta_id}',
-                    'start_date': datetime.utcnow().date()
-                }
-
-            regatta = self._get_or_create_regatta(regatta_metadata)
+            regatta = self._get_or_create_regatta(self._regatta_metadata(check, url))
 
             for result_data in results_data:
                 self._save_result(result_data, regatta.id)
@@ -564,6 +504,42 @@ class ClubspotScraper:
         except Exception as e:
             logger.error(f"Error in _scrape_regatta for {regatta_id}: {e}")
             raise
+
+    def _regatta_metadata(self, check, url):
+        """
+        Regatta row fields from the catalogue entry. The listing carries no
+        club (dropping `include` kept it small), so the club name -- and the
+        dates, for sitemap-only entries that have none -- come from one
+        per-regatta lookup, made only when a regatta is actually stored.
+        """
+        data = {
+            'source_url': url,
+            'external_id': check.external_id,
+            'name': check.name or f'Regatta {check.external_id}',
+            'start_date': check.start_date,
+            'end_date': check.end_date,
+        }
+        try:
+            remote = fetch_regatta_by_id(check.external_id, include_club=True)
+        except Exception as e:
+            logger.warning(f"Could not fetch details for regatta {check.external_id}: {e}")
+            remote = None
+        if remote:
+            start = parse_parse_date(remote.get('startDate'))
+            end = parse_parse_date(remote.get('endDate'))
+            data['name'] = remote.get('name') or data['name']
+            data['start_date'] = start.date() if start else data['start_date']
+            data['end_date'] = end.date() if end else data['end_date']
+            club = remote.get('clubObject')
+            if isinstance(club, dict) and club.get('name'):
+                data['location'] = club['name']
+            # Keep the catalogue row current as well
+            check.name = data['name']
+            check.start_date = data['start_date']
+            check.end_date = data['end_date']
+        if data['start_date'] is None:
+            data['start_date'] = datetime.utcnow().date()
+        return data
 
     def _scrape_results_with_selenium(self, results_url, regatta_id, driver, timeout=12):
         """
@@ -632,30 +608,6 @@ class ClubspotScraper:
         except Exception as e:
             logger.debug(f"Error parsing result row: {e}")
             return None
-
-    def _parse_api_regatta_data(self, api_data, regatta_id, url):
-        """Parse regatta metadata from Parse API response"""
-        data = {
-            'source_url': url,
-            'external_id': regatta_id,
-            'name': api_data.get('name', f'Regatta {regatta_id}')
-        }
-
-        start = parse_parse_date(api_data.get('startDate'))
-        data['start_date'] = start.date() if start else datetime.utcnow().date()
-
-        end = parse_parse_date(api_data.get('endDate'))
-        if end:
-            data['end_date'] = end.date()
-
-        # Get club/location from clubObject
-        club_obj = api_data.get('clubObject', {})
-        if isinstance(club_obj, dict):
-            club_name = club_obj.get('name', '')
-            if club_name:
-                data['location'] = club_name
-
-        return data
 
     def _save_result(self, result_data, regatta_id):
         """Save a single result to the database"""
@@ -734,18 +686,9 @@ class ClubspotScraper:
 
         return regatta
 
-    def _record_check(self, regatta_id, api_data, result_count):
-        """Upsert the visit record for a regatta; never lets a failure stop the run"""
-        api_data = api_data or {}
+    def _record_check(self, check, result_count):
+        """Update the catalogue row for a visit; never lets a failure stop the run"""
         try:
-            check = db.session.get(ClubspotRegattaCheck, regatta_id)
-            if check is None:
-                check = ClubspotRegattaCheck(external_id=regatta_id, check_count=0)
-            start = parse_parse_date(api_data.get('startDate'))
-            end = parse_parse_date(api_data.get('endDate'))
-            check.name = api_data.get('name') or check.name
-            check.start_date = start.date() if start else check.start_date
-            check.end_date = end.date() if end else check.end_date
             check.last_checked_at = datetime.utcnow()
             check.result_count = result_count
             check.check_count = (check.check_count or 0) + 1
@@ -753,7 +696,7 @@ class ClubspotScraper:
             db.session.commit()
         except Exception as e:
             db.session.rollback()
-            logger.warning(f"Could not record the check for {regatta_id}: {e}")
+            logger.warning(f"Could not record the check for {check.external_id}: {e}")
 
     @staticmethod
     def _extract_placement(text):

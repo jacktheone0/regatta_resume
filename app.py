@@ -497,7 +497,9 @@ ADMIN_BROWSABLE_TABLES = {
                      'sailors_added', 'results_added', 'regattas_listed', 'regattas_skipped',
                      'regattas_remaining', 'regattas_empty', 'duration_seconds', 'error_message'],
     'clubspot_regatta_checks': ['external_id', 'name', 'start_date', 'end_date',
-                                'last_checked_at', 'result_count', 'check_count'],
+                                'last_checked_at', 'result_count', 'check_count',
+                                'first_seen_at', 'last_seen_at', 'source', 'remote_created_at'],
+    'scraper_state': ['key', 'value', 'updated_at'],
     'scraper_log_entries': ['id', 'created_at', 'level', 'message', 'step', 'section',
                             'season', 'source'],
 }
@@ -995,7 +997,7 @@ def init_db():
 
 @app.cli.command()
 @click.option('--limit', type=int, default=None,
-              help='Max regattas to fetch from the API (default: all)')
+              help='Max regattas to visit this run (default: all that are due)')
 @click.option('--start-year', type=int, default=None,
               help='Only scrape regattas from this year onwards (default: no floor)')
 def scrape(limit, start_year):
@@ -1004,6 +1006,23 @@ def scrape(limit, start_year):
     print(f"Starting scraper (limit={limit or 'none'}, start_year={start_year or 'none'})...")
     stats = run_scraper(limit=limit, start_year=start_year)
     print(f"Scraping complete! Stats: {stats}")
+
+
+@app.cli.command('import-regatta-ids')
+@click.argument('path', type=click.Path(exists=True, dir_okay=False))
+@click.option('--source', default='sitemap', help="Where the IDs came from (default: sitemap)")
+def import_regatta_ids(path, source):
+    """Merge ClubSpot regatta IDs (one per line, or regatta URLs) into the catalogue"""
+    import re
+    import clubspot_catalog as catalog
+    ids = set()
+    with open(path) as f:
+        for line in f:
+            match = re.search(r'regatta/([A-Za-z0-9]{6,20})', line) or re.fullmatch(r'\s*([A-Za-z0-9]{6,20})\s*', line)
+            if match:
+                ids.add(match.group(1))
+    added = catalog.upsert_ids(ids, source=source)
+    print(f"{len(ids)} IDs read from {path}; {added} new rows added to the catalogue")
 
 
 # ============================================================================
