@@ -95,6 +95,13 @@ jobs:
           print('Database connection OK')
           PY
 
+      # The runner talks to Neon directly, so it cannot rely on Render having
+      # deployed (and migrated) the same commit -- a week of runs failed on a
+      # table the migration on Render had never created. Same Alembic chain,
+      # idempotent: a no-op when the schema is already current.
+      - name: Apply database migrations
+        run: flask db upgrade
+
       - name: Run the ClubSpot scraper
         run: |
           flask scrape \
@@ -137,7 +144,12 @@ jobs:
                                    'run continues from here.')
 
                   def state(key):
-                      row = db.session.get(ScraperState, key)
+                      try:
+                          row = db.session.get(ScraperState, key)
+                      except Exception as e:  # schema behind: say so, don't fail the summary
+                          db.session.rollback()
+                          print(f'(scraper_state unavailable: {e.__class__.__name__}; run "flask db upgrade")')
+                          return None
                       return json.loads(row.value) if row and row.value else None
 
                   enum = state('clubspot_last_enum_summary') or {}
