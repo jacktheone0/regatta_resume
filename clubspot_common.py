@@ -232,13 +232,14 @@ def measure_filters(client):
     """
     Step 0: how many regattas each filter hides. Four count queries:
     everything, public only, public and not archived (what the scraper
-    uses), and archived.
+    uses), and archived. The excluded-clubs clause is deliberately left
+    out: a `$nin` on the club pointer makes the server's count crawl, and
+    those six clubs are a rounding error in these totals.
     """
-    excluded = {'clubObject': {'$nin': list(EXCLUDED_CLUB_IDS)}}
     return {
         'all': count_regattas(client, {}),
-        'public': count_regattas(client, dict(excluded, public=True)),
-        'public_not_archived': count_regattas(client, dict(excluded, public=True, archived={'$ne': True})),
+        'public': count_regattas(client, {'public': True}),
+        'public_not_archived': count_regattas(client, {'public': True, 'archived': {'$ne': True}}),
         'archived': count_regattas(client, {'archived': True}),
     }
 

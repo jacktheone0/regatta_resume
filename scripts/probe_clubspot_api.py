@@ -26,22 +26,28 @@ from clubspot_common import (PARSE_HEADERS, PARSE_CREDENTIALS, ParseClient,  # n
 
 def probe_counts():
     """Step 0: does the archived filter hide the missing regattas?"""
-    client = ParseClient(delay_sec=0.3, log=print)
-    counts = measure_filters(client)
-    print('Regatta counts on ClubSpot:')
-    print(f"  everything (no filters at all):           {counts['all']}")
-    print(f"  public:                                   {counts['public']}")
-    print(f"  public AND not archived (scraper filter): {counts['public_not_archived']}")
-    print(f"  archived:                                 {counts['archived']}")
+    client = ParseClient(delay_sec=0.3, timeout=30, log=print)
+    print('Regatta counts on ClubSpot (each line appears as its query returns):', flush=True)
+    labels = [
+        ('all', {}, 'everything (no filters at all)'),
+        ('public', {'public': True}, 'public'),
+        ('public_not_archived', {'public': True, 'archived': {'$ne': True}}, 'public AND not archived (scraper filter)'),
+        ('archived', {'archived': True}, 'archived'),
+    ]
+    counts = {}
+    for key, where, label in labels:
+        counts[key] = count_regattas(client, where)
+        print(f"  {label + ':':44} {counts[key]}", flush=True)
     print(f"  -> the archived filter hides {counts['public'] - counts['public_not_archived']} public regattas")
+    print(f"  -> {counts['all'] - counts['public']} regattas are not public")
     print()
-    print('Per year (public, not archived):')
+    print('Per year (public, not archived):', flush=True)
     year = datetime.now(timezone.utc).year
     for y in range(2016, year + 2):
-        where = build_regatta_where('startDate',
-                                    datetime(y, 1, 1, tzinfo=timezone.utc),
-                                    datetime(y + 1, 1, 1, tzinfo=timezone.utc))
-        print(f"  {y}: {count_regattas(client, where)}")
+        where = {'public': True, 'archived': {'$ne': True},
+                 'startDate': {'$gte': {'__type': 'Date', 'iso': f'{y}-01-01T00:00:00.000Z'},
+                               '$lt': {'__type': 'Date', 'iso': f'{y + 1}-01-01T00:00:00.000Z'}}}
+        print(f"  {y}: {count_regattas(client, where)}", flush=True)
     return counts
 
 
