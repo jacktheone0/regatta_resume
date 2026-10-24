@@ -302,25 +302,43 @@ class ScraperLog(db.Model):
 
 class ClubspotRegattaCheck(db.Model):
     """
-    Every ClubSpot regatta the scraper has looked at, results or not.
+    The ClubSpot catalogue: every regatta ID ever seen, and every visit.
 
-    Regattas with results are stored in `regattas`; the ones with nothing
-    posted are not, so without this table every run would re-visit every
-    empty regatta in ClubSpot's history. Recurring runs re-check an empty
-    regatta only while results could still appear (it ended recently).
+    Rows are added by the enumeration walk (source 'api') or the sitemap
+    ('sitemap') with last_checked_at NULL, and updated when the scraper
+    visits them. Regattas with results are also stored in `regattas`; empty
+    ones live only here, so they are never re-visited forever.
     """
     __tablename__ = 'clubspot_regatta_checks'
 
     external_id = db.Column(db.String(32), primary_key=True)  # ClubSpot objectId
     name = db.Column(db.String(300))
-    start_date = db.Column(db.Date)
+    start_date = db.Column(db.Date, index=True)
     end_date = db.Column(db.Date)
-    last_checked_at = db.Column(db.DateTime)
+    last_checked_at = db.Column(db.DateTime, index=True)  # NULL = never visited
     result_count = db.Column(db.Integer, nullable=False, default=0)
     check_count = db.Column(db.Integer, nullable=False, default=0)
 
+    # Where and when the ID was seen (catalogue bookkeeping)
+    first_seen_at = db.Column(db.DateTime)
+    last_seen_at = db.Column(db.DateTime)
+    source = db.Column(db.String(20))             # 'api' or 'sitemap'
+    remote_created_at = db.Column(db.DateTime)    # ClubSpot's createdAt
+
     def __repr__(self):
         return f'<ClubspotRegattaCheck {self.external_id} results={self.result_count}>'
+
+
+class ScraperState(db.Model):
+    """Small key/value store for scraper markers (enumeration frontiers etc.)"""
+    __tablename__ = 'scraper_state'
+
+    key = db.Column(db.String(64), primary_key=True)
+    value = db.Column(db.Text)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f'<ScraperState {self.key}>'
 
 
 class ScraperLogEntry(db.Model):

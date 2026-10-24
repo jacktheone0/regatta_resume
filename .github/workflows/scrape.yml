@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: 'Max regattas to fetch from the API (blank = use the run cap)'
+        description: 'Max regattas to visit this run (blank = all that are due)'
         required: false
         type: string
       start_year:
@@ -49,6 +49,16 @@ jobs:
       # the run log is finalized and the summary step still runs); the next
       # run continues where it left off.
       SCRAPER_TIME_BUDGET_MIN: '300'
+      # Catalogue enumeration (date-window walk, never skip). Each run spends
+      # at most this many listing requests / minutes before scraping starts;
+      # the two frontier markers make the next run resume exactly where this
+      # one stopped. See .github/SCRAPER_SETUP.md for the other knobs
+      # (forward window, recent re-scan band, floor date, archived filter).
+      SCRAPER_ENUM_REQUEST_BUDGET: '300'
+      SCRAPER_ENUM_TIME_BUDGET_MIN: '20'
+      SCRAPER_ENUM_DELAY_SEC: '0.5'
+      SCRAPER_FORWARD_WINDOW_DAYS: '180'
+      SCRAPER_INCLUDE_ARCHIVED: 'false'
       SECRET_KEY: unused-by-the-scraper
 
     steps:
@@ -91,9 +101,10 @@ jobs:
         if: always()
         run: |
           python - <<'PY'
+          import json
           import os
-          from app import app
-          from models import ScraperLog
+          from app import app, db
+          from models import ScraperLog, ScraperState
           with app.app_context():
               log = ScraperLog.query.order_by(ScraperLog.id.desc()).first()
               if not log:
@@ -103,7 +114,7 @@ jobs:
                   minutes = (log.duration_seconds or 0) // 60
                   lines = [
                       f'**Status:** {log.status}',
-                      f'**Regattas listed by the API:** {log.regattas_listed}',
+                      f'**Catalogue size (regattas known):** {log.regattas_listed}',
                       f'**Skipped (already scraped, or checked empty and not due):** {log.regattas_skipped}',
                       f'**Visited this run:** {log.regattas_scraped} '
                       f'({log.regattas_empty or 0} had no results posted)',
@@ -120,6 +131,32 @@ jobs:
                   else:
                       lines.append('**Catch-up status:** backlog remains; the next scheduled '
                                    'run continues from here.')
+
+                  def state(key):
+                      row = db.session.get(ScraperState, key)
+                      return json.loads(row.value) if row and row.value else None
+
+                  enum = state('clubspot_last_enum_summary') or {}
+                  counts = state('clubspot_filter_counts')
+                  sitemap = state('clubspot_sitemap')
+                  lines.append('')
+                  lines.append('### Catalogue')
+                  lines.append(f"**Enumerated range:** {enum.get('oldest', '?')} .. {enum.get('newest', '?')}"
+                               + (' (historical backfill complete)' if enum.get('backfill_complete')
+                                  else ' (historical backfill still in progress)'))
+                  lines.append(f"**This run's walk:** {enum.get('windows', 0)} windows, "
+                               f"{enum.get('requests', 0)} requests, {enum.get('added', 0)} new regattas"
+                               + (f" -- stopped: {enum['stopped']}" if enum.get('stopped') else ''))
+                  if counts:
+                      lines.append(f"**Filter counts (step 0):** all {counts['all']}, public {counts['public']}, "
+                                   f"public+not archived {counts['public_not_archived']}, "
+                                   f"archived {counts['archived']} -> the archived filter hides "
+                                   f"{counts['public'] - counts['public_not_archived']}")
+                  if sitemap:
+                      lines.append('**Sitemap (step 4):** '
+                                   + (f"found, {sitemap.get('regatta_ids', 0)} regatta IDs "
+                                      f"({sitemap.get('added_to_catalog', 0)} new to the catalogue)"
+                                      if sitemap.get('found') else f"not available (HTTP {sitemap.get('status')})"))
                   summary = '\n\n'.join(lines)
                   print(summary)
                   path = os.environ.get('GITHUB_STEP_SUMMARY')
