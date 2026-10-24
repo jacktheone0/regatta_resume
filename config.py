@@ -16,6 +16,13 @@ class Config:
 
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
+    # Neon closes idle connections server-side; without pre_ping/recycle,
+    # a pooled connection that's gone stale raises SSL errors into requests.
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        'pool_pre_ping': True,
+        'pool_recycle': 280,
+    }
+
     # App settings
     APP_NAME = os.environ.get('APP_NAME', 'RegattaResume')
     BASE_URL = os.environ.get('BASE_URL', 'http://localhost:5000')
