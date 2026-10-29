@@ -131,6 +131,32 @@ A regatta ID list from elsewhere (for example the probe script's
 `--save` output from the sitemap) merges into the same catalogue with
 `flask import-regatta-ids FILE`.
 
+**Series and in-progress regattas.** A regatta that has started but
+whose end date is still ahead is `in_progress` (unless it started more
+than `SCRAPER_IN_PROGRESS_MAX_DAYS` = 120 days ago, because ClubSpot end
+dates are not always real). It is visited every day, its standings are
+upserted on each visit, and the profile pages badge it "In progress"
+with the date the standings were last read. Final regattas are
+insert-only; one read while it was still running is refreshed once more
+after its end date.
+
+**What a result row holds.** One row per PERSON per boat (skipper and
+crew, identity = sailor + regatta + division + role), the place, the
+scoring code when there is no place (DNF, DNS, DSQ...), the fleet size
+(boats in the division, so the place reads "3 of 18"), the crew partner,
+and the raw table row it came from. Stats pages scale every place to a
+100-boat fleet; `STATS_MIN_FLEET` (5) is the smallest fleet that counts.
+
+**Re-parsing stored results.** Rows written before crew and fleet sizes
+were stored still carry their raw row text, so they can be completed
+without visiting ClubSpot again:
+
+```bash
+flask reparse-results --dry-run            # report only
+flask reparse-results                      # add crew rows, fleet sizes, codes
+flask reparse-results --requeue-missing    # also send rows with no raw text back to the scraper
+```
+
 ## Rolling back
 
 The state of `main` before the backlog-drain changes is kept on the
