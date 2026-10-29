@@ -4,7 +4,10 @@
 
 {% macro claim_button(form, kind, obj_id, label) %}
     <form method="POST" class="d-inline claim-form">
-        {{ form.hidden_tag() }}
+        {# csrf_token only: hidden_tag() would also render empty sailor_id /
+           sailor_name_id inputs ahead of the real one below, and WTForms
+           reads the first value, so every claim failed validation. #}
+        {{ form.csrf_token }}
         {% if kind == 'clubspot' %}
             <input type="hidden" name="sailor_id" value="{{ obj_id }}">
         {% else %}
