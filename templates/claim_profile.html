@@ -2,104 +2,212 @@
 
 {% block title %}Claim Your Profile - RegattaResume{% endblock %}
 
+{% macro claim_button(form, kind, obj_id, label) %}
+    <form method="POST" class="d-inline claim-form">
+        {{ form.hidden_tag() }}
+        {% if kind == 'clubspot' %}
+            <input type="hidden" name="sailor_id" value="{{ obj_id }}">
+        {% else %}
+            <input type="hidden" name="sailor_name_id" value="{{ obj_id }}">
+        {% endif %}
+        <input type="hidden" name="evidence" class="evidence-field" value="">
+        <button type="submit" class="btn btn-sm btn-primary">{{ label }}</button>
+    </form>
+{% endmacro %}
+
 {% block content %}
 <div class="container my-5">
-    <h1 class="mb-4">Claim Your Sailor Profile</h1>
+    <h1 class="mb-1">Claim Your Sailor Profile</h1>
+    <p class="text-muted mb-4">
+        Your results may be spread across several listings &mdash; club racing on
+        ClubSpot, plus high school and college records. Claim each one you
+        recognise and they all land on one resume.
+    </p>
 
-    <div class="alert alert-info">
-        <strong>Find your profile below and claim it to:</strong>
-        <ul class="mb-0 mt-2">
-            <li>Build custom sailing resumes</li>
-            <li>Create shareable profile links</li>
-            <li>Control what results to showcase</li>
-            <li>Add a bio and customize your profile</li>
+    {# ---- Already claimed ------------------------------------------------ #}
+    {% if claims %}
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">Your Claimed Profiles</h5>
+            <a href="{{ url_for('resume_builder') }}" class="btn btn-sm btn-success">
+                Build Resume
+            </a>
+        </div>
+        <ul class="list-group list-group-flush">
+            {% for claim in claims %}
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+                <div>
+                    <strong>{{ claim.profile_name }}</strong>
+                    {% if claim.is_primary %}
+                        <span class="badge bg-primary ms-1">Primary</span>
+                    {% endif %}
+                    <br>
+                    <small class="text-muted">
+                        {% if claim.sailor_id %}
+                            ClubSpot profile
+                        {% else %}
+                            {{ claim.sailor_name.source.upper() if claim.sailor_name.source != 'both' else 'HS / College' }} record
+                            {% if claim.sailor_name.school %} &middot; {{ claim.sailor_name.school }}{% endif %}
+                        {% endif %}
+                    </small>
+                </div>
+                <form method="POST"
+                      action="{{ url_for('release_claim', claim_id=claim.id) }}"
+                      onsubmit="return confirm('Release {{ claim.profile_name }}? It becomes claimable by someone else.');">
+                    {{ form.csrf_token }}
+                    <button type="submit" class="btn btn-sm btn-outline-danger">
+                        Not me
+                    </button>
+                </form>
+            </li>
+            {% endfor %}
         </ul>
     </div>
+    {% endif %}
 
+    {# ---- Suggested matches --------------------------------------------- #}
+    {% if suggested_sailors or suggested_names %}
+    <div class="card mb-4 border-success">
+        <div class="card-header bg-success-subtle">
+            <h5 class="mb-0">Also you?</h5>
+        </div>
+        <div class="card-body">
+            <p class="text-muted small">
+                These carry the same name as a profile you've already claimed.
+            </p>
+            <ul class="list-group list-group-flush">
+                {% for s in suggested_sailors %}
+                <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                    <div>
+                        <strong>{{ s.name }}</strong>
+                        <small class="text-muted d-block">
+                            ClubSpot &middot; {{ s.total_regattas }} regattas
+                            {% if s.home_club %} &middot; {{ s.home_club }}{% endif %}
+                        </small>
+                    </div>
+                    {{ claim_button(form, 'clubspot', s.id, 'Claim too') }}
+                </li>
+                {% endfor %}
+                {% for n in suggested_names %}
+                <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                    <div>
+                        <strong>{{ n.name }}</strong>
+                        <small class="text-muted d-block">
+                            {{ n.source.upper() if n.source != 'both' else 'HS / College' }}
+                            {% if n.school %} &middot; {{ n.school }}{% endif %}
+                        </small>
+                    </div>
+                    {{ claim_button(form, 'sailor_name', n.id, 'Claim too') }}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    {% endif %}
+
+    {# ---- Search -------------------------------------------------------- #}
     <div class="card">
         <div class="card-header">
             <h5 class="mb-0">Search for Your Profile</h5>
         </div>
         <div class="card-body">
-            <input
-                type="text"
-                id="profileSearch"
-                class="form-control mb-4"
-                placeholder="Type your name..."
-            >
+            <form method="GET" class="mb-4">
+                <div class="input-group">
+                    <input type="text" name="q" class="form-control form-control-lg"
+                           placeholder="Type your name..." value="{{ query }}"
+                           autofocus>
+                    <button class="btn btn-primary" type="submit">Search</button>
+                </div>
+                <small class="text-muted">
+                    Searches club, high school and college listings at once.
+                </small>
+            </form>
 
-            <div id="sailorsList">
-                {% if sailors %}
-                    {% for sailor in sailors %}
-                    <div class="sailor-claim-item" data-name="{{ sailor.name.lower() }}">
-                        <div class="d-flex justify-content-between align-items-center">
+            <div class="mb-4">
+                <label for="evidenceInput" class="form-label small fw-bold">
+                    Anything that confirms this is you? (optional)
+                </label>
+                <textarea id="evidenceInput" class="form-control" rows="2"
+                          placeholder="School email, graduation year, team name..."></textarea>
+                <small class="text-muted">
+                    Attached to the claim so we can sort out any dispute later.
+                </small>
+            </div>
+
+            {% if query %}
+                {% if sailors or sailor_names %}
+                    <ul class="list-group">
+                        {% for s in sailors %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
                             <div>
-                                <h6 class="mb-1">{{ sailor.name }}</h6>
-                                {% if sailor.home_club %}
-                                    <small class="text-muted">{{ sailor.home_club }}</small>
-                                {% endif %}
-                                <br>
-                                <small class="text-muted">
-                                    {{ sailor.total_regattas }} regattas
-                                    {% if sailor.best_finish %}| Best: {{ sailor.best_finish }}{% endif %}
+                                <strong>{{ s.name }}</strong>
+                                <span class="badge bg-secondary ms-1">ClubSpot</span>
+                                <small class="text-muted d-block">
+                                    {{ s.total_regattas }} regattas
+                                    {% if s.best_finish %} &middot; best {{ s.best_finish }}{% endif %}
+                                    {% if s.home_club %} &middot; {{ s.home_club }}{% endif %}
                                 </small>
                             </div>
-                            <div>
-                                <form method="POST" class="d-inline">
-                                    {{ form.hidden_tag() }}
-                                    <input type="hidden" name="sailor_id" value="{{ sailor.id }}">
-                                    <button type="submit" class="btn btn-primary">
-                                        Claim This Profile
-                                    </button>
-                                </form>
+                            <div class="text-nowrap">
+                                <a href="{{ url_for('sailor_profile', sailor_id=s.id) }}"
+                                   class="btn btn-sm btn-outline-secondary" target="_blank">View</a>
+                                {{ claim_button(form, 'clubspot', s.id, 'This is me') }}
                             </div>
-                        </div>
-                    </div>
-                    {% endfor %}
+                        </li>
+                        {% endfor %}
+
+                        {% for n in sailor_names %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <div>
+                                <strong>{{ n.name }}</strong>
+                                <span class="badge bg-info text-dark ms-1">
+                                    {{ n.source.upper() if n.source != 'both' else 'HS / College' }}
+                                </span>
+                                <small class="text-muted d-block">
+                                    {% if n.school %}{{ n.school }}{% else %}School not recorded{% endif %}
+                                    {% if n.graduation_year %} &middot; class of {{ n.graduation_year }}{% endif %}
+                                </small>
+                            </div>
+                            <div class="text-nowrap">
+                                <a href="{{ url_for('sailor_name_profile', sailor_name_id=n.id) }}"
+                                   class="btn btn-sm btn-outline-secondary" target="_blank">View</a>
+                                {{ claim_button(form, 'sailor_name', n.id, 'This is me') }}
+                            </div>
+                        </li>
+                        {% endfor %}
+                    </ul>
                 {% else %}
-                    <p class="text-muted">No unclaimed profiles available at this time.</p>
+                    <p class="text-muted mb-0">
+                        Nothing unclaimed matches &ldquo;{{ query }}&rdquo;. It may already be
+                        claimed, or not scraped yet.
+                    </p>
                 {% endif %}
-            </div>
+            {% else %}
+                <p class="text-muted mb-0">Search your name to get started.</p>
+            {% endif %}
+
+            {% if form.sailor_id.errors %}
+                <div class="alert alert-danger mt-3 mb-0">{{ form.sailor_id.errors[0] }}</div>
+            {% endif %}
         </div>
     </div>
 
     <div class="mt-4">
         <p class="text-muted">
-            <strong>Don't see your profile?</strong> Your results may not have been scraped yet.
-            The scraper runs every Sunday at 10:00 PM Pacific. Check back soon!
+            <strong>Can't find yourself?</strong> Claim what we do have, then
+            <a href="{{ url_for('manual_result_new') }}">add the missing results by hand</a>.
         </p>
     </div>
 </div>
 
-<style>
-.sailor-claim-item {
-    padding: 1rem;
-    border-bottom: 1px solid #eee;
-}
-
-.sailor-claim-item:last-child {
-    border-bottom: none;
-}
-
-.sailor-claim-item:hover {
-    background: #f8f9fa;
-}
-</style>
-
 <script>
-const searchInput = document.getElementById('profileSearch');
-const items = document.querySelectorAll('.sailor-claim-item');
-
-searchInput.addEventListener('input', function() {
-    const query = this.value.toLowerCase();
-
-    items.forEach(item => {
-        const name = item.dataset.name;
-        if (name.includes(query)) {
-            item.style.display = 'block';
-        } else {
-            item.style.display = 'none';
-        }
+// Carry whatever is typed in the shared evidence box into whichever claim
+// button gets pressed, so the note is not lost on submit.
+document.querySelectorAll('.claim-form').forEach(form => {
+    form.addEventListener('submit', () => {
+        const box = document.getElementById('evidenceInput');
+        const field = form.querySelector('.evidence-field');
+        if (box && field) field.value = box.value;
     });
 });
 </script>

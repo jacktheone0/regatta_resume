@@ -6,6 +6,12 @@ import secrets
 
 db = SQLAlchemy()
 
+# The two kinds of scraped profile a sailor can claim. A real sailor is often
+# both: a ClubSpot `Sailor` row plus one or more HS/College `SailorName` rows.
+CLAIM_CLUBSPOT = 'clubspot'
+CLAIM_SAILOR_NAME = 'sailor_name'
+
+
 class User(UserMixin, db.Model):
     """User accounts (optional login for sailors/coaches)"""
     __tablename__ = 'users'
@@ -17,15 +23,96 @@ class User(UserMixin, db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)
 
-    # Relationship to sailor (if claiming a profile)
+    # Identity the sailor tells us about themselves. The scraped profiles carry
+    # a name too, but it is whatever the regatta organizers typed; this is the
+    # spelling the sailor wants on a resume.
+    full_name = db.Column(db.String(200))
+    display_name = db.Column(db.String(200))   # optional public override
+    grad_year = db.Column(db.Integer)
+    primary_school = db.Column(db.String(200))
+    profile_completed_at = db.Column(db.DateTime)
+
+    # Email verification. A claim is usable immediately, but publishing a
+    # resume requires a verified address (see ProfileClaim).
+    email_verified = db.Column(db.Boolean, nullable=False, default=False)
+    email_verify_token = db.Column(db.String(64), index=True)
+    email_verify_sent_at = db.Column(db.DateTime)
+
+    is_admin = db.Column(db.Boolean, nullable=False, default=False)
+
+    # DEPRECATED: single-profile claim, superseded by ProfileClaim. Kept so a
+    # mid-deploy rollback still works; migration 011 drops it.
     sailor_id = db.Column(db.Integer, db.ForeignKey('sailors.id'), nullable=True)
     sailor = db.relationship('Sailor', back_populates='user', foreign_keys=[sailor_id])
+
+    claims = db.relationship('ProfileClaim', back_populates='user',
+                             foreign_keys='ProfileClaim.user_id',
+                             cascade='all, delete-orphan')
+    manual_results = db.relationship('ManualResult', back_populates='user',
+                                     cascade='all, delete-orphan')
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
 
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
+
+    def new_email_verify_token(self):
+        """Issue a fresh verification token and stamp the send time."""
+        self.email_verify_token = secrets.token_urlsafe(32)
+        self.email_verify_sent_at = datetime.utcnow()
+        return self.email_verify_token
+
+    # ---- claims -----------------------------------------------------------
+
+    @property
+    def approved_claims(self):
+        return [c for c in self.claims if c.status == 'approved']
+
+    @property
+    def claimed_sailors(self):
+        """ClubSpot Sailor rows this user has claimed."""
+        return [c.sailor for c in self.approved_claims if c.sailor is not None]
+
+    @property
+    def claimed_names(self):
+        """HS/College SailorName rows this user has claimed."""
+        return [c.sailor_name for c in self.approved_claims if c.sailor_name is not None]
+
+    @property
+    def has_claim(self):
+        return bool(self.approved_claims)
+
+    @property
+    def primary_claim(self):
+        """The claim that supplies the canonical display name."""
+        approved = self.approved_claims
+        if not approved:
+            return None
+        for claim in approved:
+            if claim.is_primary:
+                return claim
+        return approved[0]
+
+    def owns(self, kind, obj_id):
+        """True if this user holds an approved claim on (kind, obj_id)."""
+        if kind == CLAIM_CLUBSPOT:
+            return any(c.sailor_id == obj_id for c in self.approved_claims)
+        if kind == CLAIM_SAILOR_NAME:
+            return any(c.sailor_name_id == obj_id for c in self.approved_claims)
+        return False
+
+    @property
+    def resume_name(self):
+        """Name to print on a resume, best source first."""
+        if self.display_name:
+            return self.display_name
+        if self.full_name:
+            return self.full_name
+        claim = self.primary_claim
+        if claim:
+            return claim.profile_name
+        return self.email.split('@')[0]
 
     def __repr__(self):
         return f'<User {self.email}>'
@@ -44,9 +131,12 @@ class Sailor(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Claimed profile
+    # Claimed profile. `is_claimed` is denormalized from ProfileClaim so the
+    # templates and the claim-search query stay cheap; ProfileClaim is the
+    # source of truth and writes this flag on approval.
     is_claimed = db.Column(db.Boolean, default=False)
     user = db.relationship('User', back_populates='sailor', foreign_keys=[User.sailor_id])
+    claim = db.relationship('ProfileClaim', back_populates='sailor', uselist=False)
 
     # Relationships
     results = db.relationship('Result', back_populates='sailor', cascade='all, delete-orphan')
@@ -77,6 +167,105 @@ class Sailor(db.Model):
             Result.sailor_id == self.id
         ).scalar()
         return round(result, 1) if result else None
+
+
+class ProfileClaim(db.Model):
+    """
+    A user's claim on one scraped profile.
+
+    Replaces the old single `User.sailor_id` link. A sailor normally appears in
+    several scraped tables under slightly different names, so claiming has to be
+    many-to-one: one account, many profiles. Exactly one of `sailor_id` /
+    `sailor_name_id` is set, and each profile can be claimed only once.
+    """
+    __tablename__ = 'profile_claims'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+
+    sailor_id = db.Column(db.Integer, db.ForeignKey('sailors.id'), nullable=True)
+    sailor_name_id = db.Column(db.Integer, db.ForeignKey('sailor_names.id'), nullable=True)
+
+    status = db.Column(db.String(20), nullable=False, default='approved')  # pending|approved|rejected
+    is_primary = db.Column(db.Boolean, nullable=False, default=False)
+    evidence = db.Column(db.Text)  # school email, grad year, free-text note
+
+    requested_at = db.Column(db.DateTime, default=datetime.utcnow)
+    decided_at = db.Column(db.DateTime)
+    decided_by_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+
+    user = db.relationship('User', back_populates='claims', foreign_keys=[user_id])
+    decided_by = db.relationship('User', foreign_keys=[decided_by_user_id])
+    sailor = db.relationship('Sailor', back_populates='claim')
+    sailor_name = db.relationship('SailorName', back_populates='claim')
+
+    __table_args__ = (
+        db.UniqueConstraint('sailor_id', name='uq_claim_sailor'),
+        db.UniqueConstraint('sailor_name_id', name='uq_claim_sailor_name'),
+        db.CheckConstraint(
+            '(sailor_id IS NULL) != (sailor_name_id IS NULL)',
+            name='ck_claim_one_target'
+        ),
+    )
+
+    @property
+    def kind(self):
+        return CLAIM_CLUBSPOT if self.sailor_id else CLAIM_SAILOR_NAME
+
+    @property
+    def target_id(self):
+        return self.sailor_id if self.sailor_id else self.sailor_name_id
+
+    @property
+    def profile_name(self):
+        if self.sailor:
+            return self.sailor.name
+        if self.sailor_name:
+            return self.sailor_name.name
+        return None
+
+    def __repr__(self):
+        return f'<ProfileClaim user={self.user_id} {self.kind}:{self.target_id} {self.status}>'
+
+
+class ManualResult(db.Model):
+    """
+    A result the sailor entered themselves, for regattas the scrapers missed.
+
+    Owned by the user rather than by a claimed profile: it is a claim about the
+    person, who may hold several profiles, and it must survive a profile being
+    re-scraped. Deliberately never written into `results` / `hs_results` /
+    `college_results` -- the scrapers own those tables and would clobber it, or
+    worse, serve it to other users as scraped fact.
+    """
+    __tablename__ = 'manual_results'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+
+    regatta_name = db.Column(db.String(300), nullable=False)
+    regatta_date = db.Column(db.Date, index=True)
+    location = db.Column(db.String(200))
+
+    place_numeric = db.Column(db.Integer)
+    total_boats = db.Column(db.Integer)
+    boat_type = db.Column(db.String(100))   # "420", "Laser"
+    division = db.Column(db.String(50))
+    role = db.Column(db.String(20))         # 'skipper' or 'crew'
+    team_name = db.Column(db.String(200))
+    crew_partner = db.Column(db.String(200))
+    notes = db.Column(db.Text)
+
+    source_url = db.Column(db.String(500))  # link to published results, if any
+    verified = db.Column(db.Boolean, nullable=False, default=False)  # admin-confirmed
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = db.relationship('User', back_populates='manual_results')
+
+    def __repr__(self):
+        return f'<ManualResult {self.regatta_name} ({self.user_id})>'
 
 
 class Regatta(db.Model):
@@ -145,7 +334,9 @@ class SailorName(db.Model):
     name = db.Column(db.String(200), nullable=False, index=True)
     name_normalized = db.Column(db.String(200), unique=True, nullable=False, index=True)
 
-    # Account claiming
+    # Account claiming. As on Sailor, `is_claimed` is denormalized from
+    # ProfileClaim; `user_id`/`claimed_at` predate it and are kept in sync for
+    # back-compat (nothing read them before -- they were never written).
     is_claimed = db.Column(db.Boolean, default=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     claimed_at = db.Column(db.DateTime)
@@ -159,7 +350,9 @@ class SailorName(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
-    user = db.relationship('User', backref='claimed_sailor_names')
+    user = db.relationship('User', backref='legacy_claimed_sailor_names',
+                           foreign_keys=[user_id])
+    claim = db.relationship('ProfileClaim', back_populates='sailor_name', uselist=False)
     hs_results = db.relationship('HSResult', back_populates='sailor_name', cascade='all, delete-orphan')
     college_results = db.relationship('CollegeResult', back_populates='sailor_name', cascade='all, delete-orphan')
 
@@ -250,13 +443,20 @@ class ResumeLink(db.Model):
     __tablename__ = 'resume_links'
 
     id = db.Column(db.Integer, primary_key=True)
-    sailor_id = db.Column(db.Integer, db.ForeignKey('sailors.id'), nullable=False, index=True)
+
+    # Owner. Was `sailor_id` (ClubSpot only), which locked HS/College sailors
+    # out of resumes entirely; the owner is now the account.
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True, index=True)
+    sailor_id = db.Column(db.Integer, db.ForeignKey('sailors.id'), nullable=True, index=True)
+
     token = db.Column(db.String(32), unique=True, nullable=False, index=True)
 
     # Resume customization
     title = db.Column(db.String(200), default='Sailing Resume')
     custom_bio = db.Column(db.Text)
-    selected_result_ids = db.Column(db.JSON)  # List of result IDs to include
+    # Qualified result keys, e.g. ["clubspot:1203", "hs:88471", "manual:14"].
+    # Bare ints are legacy ClubSpot `Result.id`s and still resolve.
+    selected_result_ids = db.Column(db.JSON)
     template_style = db.Column(db.String(50), default='modern')  # 'modern', 'classic', 'minimal'
 
     # Metadata
@@ -265,6 +465,7 @@ class ResumeLink(db.Model):
     access_count = db.Column(db.Integer, default=0)
 
     # Relationships
+    user = db.relationship('User', backref='resume_links')
     sailor = db.relationship('Sailor', back_populates='resume_links')
 
     def __repr__(self):

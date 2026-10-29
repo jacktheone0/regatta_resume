@@ -3,17 +3,26 @@ from flask_login import LoginManager, login_user, logout_user, login_required, c
 from flask_migrate import Migrate
 from apscheduler.schedulers.background import BackgroundScheduler
 from config import config
-from models import db, User, Sailor, Regatta, Result, ResumeLink, SailorName, HSResult, CollegeResult, ScraperLogEntry
-from forms import LoginForm, RegisterForm, ClaimProfileForm
-from utils import generate_pdf, calculate_stats, get_performance_trends
+from models import (db, User, Sailor, Regatta, Result, ResumeLink, SailorName,
+                   HSResult, CollegeResult, ScraperLogEntry, ProfileClaim,
+                   ManualResult, CLAIM_CLUBSPOT, CLAIM_SAILOR_NAME)
+from forms import (LoginForm, RegisterForm, ClaimProfileForm, AccountForm,
+                   ManualResultForm)
+from utils import (generate_pdf, calculate_stats, get_performance_trends,
+                   resolve_resume_entries, collect_user_entries,
+                   stats_from_entries, resume_display_name, resume_subtitle,
+                   parse_result_key, KIND_CLUBSPOT, KIND_HS, KIND_COLLEGE,
+                   KIND_MANUAL)
+from mailer import send_verification_email, send_claim_notification
 import click
 import os
 import json
 import time
 import requests
+from functools import wraps
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from sqlalchemy import desc, func, text
+from sqlalchemy import desc, func, text, or_
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -35,6 +44,40 @@ login_manager.login_message = 'Please log in to access this page.'
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
+
+
+# ============================================================================
+# AUTHORIZATION
+# ============================================================================
+
+def admin_required(view):
+    """
+    Restrict a view to admins.
+
+    Until this existed, /admin and every /api/scraper/* endpoint were only
+    @login_required -- so any registered user could browse the database and
+    start or stop scraper runs.
+    """
+    @wraps(view)
+    @login_required
+    def wrapped(*args, **kwargs):
+        if not current_user.is_admin:
+            abort(403)
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def require_claim_or_redirect():
+    """
+    Common guard for the owner-only pages.
+
+    Returns a redirect response when the user has not claimed anything yet,
+    otherwise None.
+    """
+    if not current_user.has_claim:
+        flash('Claim your sailor profile first to build a resume.', 'info')
+        return redirect(url_for('claim_profile'))
+    return None
 
 
 # ============================================================================
@@ -219,7 +262,7 @@ def sailor_profile(sailor_id):
     stats = calculate_stats(sailor)
 
     # Check if current user owns this profile
-    is_owner = current_user.is_authenticated and current_user.sailor_id == sailor_id
+    is_owner = current_user.is_authenticated and current_user.owns(CLAIM_CLUBSPOT, sailor_id)
 
     # Also check for HS/College results by matching sailor name
     sailor_name_match = SailorName.query.filter_by(
@@ -295,7 +338,8 @@ def sailor_name_profile(sailor_name_id):
     }
 
     # Check if user owns this (if they have claimed it)
-    is_owner = current_user.is_authenticated and sailor_name.user_id == current_user.id
+    is_owner = current_user.is_authenticated and current_user.owns(
+        CLAIM_SAILOR_NAME, sailor_name_id)
 
     return render_template('sailor_name_profile.html',
                          sailor_name=sailor_name,
@@ -305,29 +349,37 @@ def sailor_name_profile(sailor_name_id):
                          is_owner=is_owner)
 
 
-@app.route('/sailor/<int:sailor_id>/resume-builder')
+@app.route('/resume-builder')
 @login_required
-def resume_builder(sailor_id):
-    """Resume builder page - only for profile owners"""
-    sailor = Sailor.query.get_or_404(sailor_id)
+def resume_builder():
+    """
+    Resume builder for the logged-in user.
 
-    # Check ownership
-    if current_user.sailor_id != sailor_id:
-        flash('You can only edit your own resume.', 'error')
-        return redirect(url_for('sailor_profile', sailor_id=sailor_id))
+    Was /sailor/<id>/resume-builder, which only ever worked for a ClubSpot
+    profile. The builder now draws on every claimed profile plus the sailor's
+    own added results.
+    """
+    redirect_response = require_claim_or_redirect()
+    if redirect_response:
+        return redirect_response
 
-    # Get all results
-    results = db.session.query(Result, Regatta).join(
-        Regatta, Result.regatta_id == Regatta.id
-    ).filter(
-        Result.sailor_id == sailor_id
-    ).order_by(
-        desc(Regatta.start_date)
-    ).all()
+    grouped = collect_user_entries(current_user)
+    total = sum(len(v) for v in grouped.values())
 
     return render_template('resume_builder.html',
-                         sailor=sailor,
-                         results=results)
+                         grouped=grouped,
+                         total_entries=total,
+                         section_order=[KIND_CLUBSPOT, KIND_HS, KIND_COLLEGE, KIND_MANUAL],
+                         existing_links=ResumeLink.query.filter_by(
+                             user_id=current_user.id
+                         ).order_by(desc(ResumeLink.created_at)).all())
+
+
+@app.route('/sailor/<int:sailor_id>/resume-builder')
+@login_required
+def resume_builder_legacy(sailor_id):
+    """Old per-sailor builder URL; kept so existing bookmarks still land."""
+    return redirect(url_for('resume_builder'))
 
 
 @app.route('/coach-view/<int:sailor_id>')
@@ -403,31 +455,25 @@ def shared_resume(token):
     resume_link.access_count += 1
     db.session.commit()
 
-    sailor = resume_link.sailor
+    entries = resolve_resume_entries(resume_link)
 
-    # Get selected results
-    if resume_link.selected_result_ids:
-        results = db.session.query(Result, Regatta).join(
-            Regatta, Result.regatta_id == Regatta.id
-        ).filter(
-            Result.id.in_(resume_link.selected_result_ids)
-        ).order_by(desc(Regatta.start_date)).all()
-    else:
-        # If no selection, show all
-        results = db.session.query(Result, Regatta).join(
-            Regatta, Result.regatta_id == Regatta.id
-        ).filter(
-            Result.sailor_id == sailor.id
-        ).order_by(desc(Regatta.start_date)).all()
+    # Guard the template name: it comes from stored data, and an unexpected
+    # value would otherwise be a path into render_template.
+    style = resume_link.template_style if resume_link.template_style in (
+        'modern', 'classic', 'minimal') else 'modern'
 
-    return render_template(f'resume_{resume_link.template_style}.html',
-                         sailor=sailor,
+    return render_template(f'resume_{style}.html',
+                         sailor=resume_link.sailor,
+                         owner=resume_link.user,
+                         display_name=resume_display_name(resume_link),
+                         subtitle=resume_subtitle(resume_link),
                          resume_link=resume_link,
-                         results=results)
+                         entries=entries,
+                         stats=stats_from_entries(entries))
 
 
 @app.route('/admin')
-@login_required
+@admin_required
 def admin_dashboard():
     """Admin dashboard with scraper controls"""
     # Calculate database stats
@@ -441,7 +487,7 @@ def admin_dashboard():
 
 
 @app.route('/admin/stats.json')
-@login_required
+@admin_required
 def admin_stats_json():
     """Database stats + latest scraper section completions for in-place refresh"""
     # Most recent completion row per step (rows with step set are written
@@ -502,13 +548,22 @@ ADMIN_BROWSABLE_TABLES = {
     'scraper_state': ['key', 'value', 'updated_at'],
     'scraper_log_entries': ['id', 'created_at', 'level', 'message', 'step', 'section',
                             'season', 'source'],
+    'profile_claims': ['id', 'user_id', 'sailor_id', 'sailor_name_id', 'status',
+                       'is_primary', 'evidence', 'requested_at', 'decided_at',
+                       'decided_by_user_id'],
+    'manual_results': ['id', 'user_id', 'regatta_name', 'regatta_date', 'location',
+                       'place_numeric', 'total_boats', 'boat_type', 'division', 'role',
+                       'team_name', 'crew_partner', 'source_url', 'verified',
+                       'created_at', 'updated_at'],
+    # `users` stays off this list on purpose: it holds password hashes and
+    # email-verification tokens.
 }
 
 ADMIN_DB_PAGE_SIZE = 50
 
 
 @app.route('/admin/db')
-@login_required
+@admin_required
 def admin_db_browser():
     """Read-only table browser: paging and column sort only, no editing"""
     table = request.args.get('table', 'results')
@@ -553,7 +608,7 @@ def admin_db_browser():
 
 
 @app.route('/admin/logs/stream')
-@login_required
+@admin_required
 def admin_logs_stream():
     """
     Server-Sent Events stream of scraper_log_entries rows.
@@ -655,22 +710,47 @@ def api_sailor_results(sailor_id):
 @app.route('/api/resume-link/create', methods=['POST'])
 @login_required
 def api_create_resume_link():
-    """Create a shareable resume link"""
-    data = request.get_json()
-    sailor_id = data.get('sailor_id')
+    """Create a shareable resume link owned by the current user."""
+    data = request.get_json() or {}
 
-    # Verify ownership
-    if current_user.sailor_id != sailor_id:
-        return jsonify({'error': 'Unauthorized'}), 403
+    if not current_user.has_claim:
+        return jsonify({'error': 'Claim a sailor profile first.'}), 403
 
-    # Create resume link
+    # Publishing is the point where a claim becomes public, so that is where
+    # the verified-email requirement sits -- not on claiming itself.
+    if (app.config['REQUIRE_VERIFIED_EMAIL_TO_PUBLISH']
+            and not current_user.email_verified):
+        return jsonify({
+            'error': 'Confirm your email address before publishing a resume.',
+            'needs_verification': True
+        }), 403
+
+    # Accept only keys the user actually owns: the selection arrives from the
+    # client and must not be able to pull in someone else's results.
+    owned = {e.key for group in collect_user_entries(current_user).values()
+             for e in group}
+    requested = data.get('selected_result_ids') or []
+    selected = [k for k in requested if k in owned]
+
+    if requested and not selected:
+        return jsonify({'error': 'None of those results belong to you.'}), 403
+
+    style = data.get('template_style', 'modern')
+    if style not in ('modern', 'classic', 'minimal'):
+        style = 'modern'
+
+    primary = current_user.primary_claim
+
     resume_link = ResumeLink(
-        sailor_id=sailor_id,
+        user_id=current_user.id,
+        # Kept populated when there is a ClubSpot claim so the old per-sailor
+        # views and `Sailor.resume_links` keep working.
+        sailor_id=primary.sailor_id if primary else None,
         token=ResumeLink.generate_token(),
-        title=data.get('title', 'Sailing Resume'),
+        title=(data.get('title') or 'Sailing Resume')[:200],
         custom_bio=data.get('custom_bio'),
-        selected_result_ids=data.get('selected_result_ids'),
-        template_style=data.get('template_style', 'modern')
+        selected_result_ids=selected,
+        template_style=style
     )
 
     db.session.add(resume_link)
@@ -681,7 +761,8 @@ def api_create_resume_link():
     return jsonify({
         'success': True,
         'token': resume_link.token,
-        'url': share_url
+        'url': share_url,
+        'result_count': len(selected)
     })
 
 
@@ -692,20 +773,23 @@ def api_resume_pdf(token):
         return jsonify({'error': 'PDF export disabled'}), 403
 
     resume_link = ResumeLink.query.filter_by(token=token).first_or_404()
-    sailor = resume_link.sailor
 
     # Generate PDF
     pdf_path = generate_pdf(resume_link)
 
+    # resume_link.sailor is now nullable (HS/college-only sailors have no
+    # ClubSpot row), so the filename comes from the resolved display name.
+    safe_name = resume_display_name(resume_link).replace(' ', '_')
+
     return send_file(
         pdf_path,
         as_attachment=True,
-        download_name=f"{sailor.name.replace(' ', '_')}_sailing_resume.pdf"
+        download_name=f"{safe_name}_sailing_resume.pdf"
     )
 
 
 @app.route('/api/scraper/run', methods=['POST'])
-@login_required
+@admin_required
 def api_run_scraper():
     """
     Trigger the ClubSpot scraper (admin only).
@@ -762,7 +846,7 @@ def api_run_scraper():
 
 
 @app.route('/api/scraper/stop', methods=['POST'])
-@login_required
+@admin_required
 def api_stop_scraper():
     """Stop currently running scraper (admin only)"""
     try:
@@ -784,7 +868,7 @@ def api_stop_scraper():
 
 
 @app.route('/api/scraper/scrape-schools', methods=['POST'])
-@login_required
+@admin_required
 def api_scrape_schools():
     """
     Step 1: Scrape all schools and store in database
@@ -813,7 +897,7 @@ def api_scrape_schools():
 
 
 @app.route('/api/scraper/scrape-rosters', methods=['POST'])
-@login_required
+@admin_required
 def api_scrape_rosters():
     """
     Step 2: Scrape rosters for a specific season
@@ -843,7 +927,7 @@ def api_scrape_rosters():
 
 
 @app.route('/api/scraper/scrape-results', methods=['POST'])
-@login_required
+@admin_required
 def api_scrape_results():
     """
     Step 3: Scrape results for sailors from a specific season
@@ -913,6 +997,7 @@ def register():
     if form.validate_on_submit():
         user = User(
             email=form.email.data.lower(),
+            full_name=form.full_name.data.strip(),
             role=form.role.data
         )
         user.set_password(form.password.data)
@@ -921,7 +1006,21 @@ def register():
         db.session.commit()
 
         login_user(user)
-        flash('Registration successful! Welcome to RegattaResume.', 'success')
+
+        sent, link = send_verification_email(user)
+        db.session.commit()  # persist the token issued above
+        if sent:
+            flash('Registration successful! Check your email to confirm your '
+                  'address.', 'success')
+        else:
+            # Email is off (or misconfigured): surface the link rather than
+            # leaving the sailor stuck at an unverifiable account.
+            app.logger.info('Verification link for %s: %s', user.email, link)
+            flash('Registration successful! Welcome to RegattaResume.', 'success')
+
+        # Sailors land on the claim flow; coaches have nothing to claim.
+        if user.role == 'sailor':
+            return redirect(url_for('claim_profile'))
         return redirect(url_for('index'))
 
     return render_template('register.html', form=form)
@@ -935,33 +1034,452 @@ def logout():
     return redirect(url_for('index'))
 
 
+CLAIM_SEARCH_LIMIT = 20
+
+
+def _claim_search(query):
+    """
+    Find unclaimed profiles matching a name, across both sources.
+
+    Server-side and limited: the old page loaded every unclaimed Sailor row
+    and filtered in JavaScript, which is tens of thousands of rows once the
+    rosters are scraped. Tokenized the same way as /search so "John Smith"
+    still finds "Smith, John".
+    """
+    tokens = [t for t in query.lower().split() if t]
+    if not tokens:
+        return [], []
+
+    sailor_q = Sailor.query.filter_by(is_claimed=False)
+    name_q = SailorName.query.filter_by(is_claimed=False)
+    for token in tokens:
+        sailor_q = sailor_q.filter(Sailor.name_normalized.contains(token))
+        name_q = name_q.filter(SailorName.name_normalized.contains(token))
+
+    return (sailor_q.order_by(Sailor.name).limit(CLAIM_SEARCH_LIMIT).all(),
+            name_q.order_by(SailorName.name).limit(CLAIM_SEARCH_LIMIT).all())
+
+
+def _suggested_matches(user):
+    """
+    Other-source profiles whose name matches something already claimed.
+
+    A sailor is normally several rows -- a ClubSpot profile and one or more
+    HS/college names. Surfacing the rest is what turns a claim into a complete
+    resume instead of a half one.
+    """
+    claimed_normals = {s.name_normalized for s in user.claimed_sailors if s.name_normalized}
+    claimed_normals |= {n.name_normalized for n in user.claimed_names if n.name_normalized}
+    if not claimed_normals:
+        return [], []
+
+    already_sailors = {s.id for s in user.claimed_sailors}
+    already_names = {n.id for n in user.claimed_names}
+
+    sailors = [
+        s for s in Sailor.query.filter(
+            Sailor.name_normalized.in_(claimed_normals),
+            Sailor.is_claimed == False  # noqa: E712 - SQL, not Python
+        ).limit(CLAIM_SEARCH_LIMIT).all()
+        if s.id not in already_sailors
+    ]
+    names = [
+        n for n in SailorName.query.filter(
+            SailorName.name_normalized.in_(claimed_normals),
+            SailorName.is_claimed == False  # noqa: E712
+        ).limit(CLAIM_SEARCH_LIMIT).all()
+        if n.id not in already_names
+    ]
+    return sailors, names
+
+
 @app.route('/claim-profile', methods=['GET', 'POST'])
 @login_required
 def claim_profile():
-    """Claim a sailor profile"""
-    if current_user.sailor_id:
-        flash('You have already claimed a profile.', 'info')
-        return redirect(url_for('sailor_profile', sailor_id=current_user.sailor_id))
+    """
+    Claim a scraped profile -- either a ClubSpot Sailor or an HS/College
+    SailorName.
 
+    Claiming is additive: a sailor can hold several profiles, so this page
+    stays reachable after the first claim.
+    """
     form = ClaimProfileForm()
 
     if form.validate_on_submit():
-        sailor = Sailor.query.get(form.sailor_id.data)
+        return _handle_claim(form)
 
-        if sailor.is_claimed:
-            flash('This profile has already been claimed.', 'error')
-        else:
-            current_user.sailor_id = sailor.id
-            sailor.is_claimed = True
+    query = request.args.get('q', '').strip()
+    # Default the search box to the name on the account -- usually the sailor
+    # is looking for exactly that.
+    if not query and not current_user.has_claim and current_user.full_name:
+        query = current_user.full_name
+
+    sailors, sailor_names = _claim_search(query) if query else ([], [])
+    suggested_sailors, suggested_names = _suggested_matches(current_user)
+
+    return render_template('claim_profile.html',
+                         form=form,
+                         query=query,
+                         sailors=sailors,
+                         sailor_names=sailor_names,
+                         suggested_sailors=suggested_sailors,
+                         suggested_names=suggested_names,
+                         claims=current_user.approved_claims)
+
+
+def _handle_claim(form):
+    """Apply one claim submitted from the claim page."""
+    evidence = (form.evidence.data or '').strip() or None
+    is_first = not current_user.has_claim
+
+    if form.sailor_id.data:
+        kind, target = CLAIM_CLUBSPOT, Sailor.query.get(form.sailor_id.data)
+    else:
+        kind, target = CLAIM_SAILOR_NAME, SailorName.query.get(form.sailor_name_id.data)
+
+    # get() rather than get_or_404 earlier returned None and 500'd on a forged id
+    if target is None:
+        flash('That profile no longer exists.', 'error')
+        return redirect(url_for('claim_profile'))
+
+    if target.is_claimed:
+        flash('This profile has already been claimed. If it is yours, '
+              'contact us and we will sort it out.', 'error')
+        return redirect(url_for('claim_profile'))
+
+    claim = ProfileClaim(
+        user_id=current_user.id,
+        status='approved',
+        is_primary=is_first,
+        evidence=evidence,
+        decided_at=datetime.utcnow()
+    )
+    if kind == CLAIM_CLUBSPOT:
+        claim.sailor_id = target.id
+    else:
+        claim.sailor_name_id = target.id
+        # Keep the legacy columns in step with the new claim table.
+        target.user_id = current_user.id
+        target.claimed_at = datetime.utcnow()
+
+    target.is_claimed = True
+
+    # Mirror into the deprecated single-profile FK so a rollback to the
+    # pre-008 code still finds the claim. Migration 011 removes this.
+    if kind == CLAIM_CLUBSPOT and current_user.sailor_id is None:
+        current_user.sailor_id = target.id
+
+    if not current_user.full_name:
+        current_user.full_name = target.name
+
+    db.session.add(claim)
+    db.session.commit()
+
+    send_claim_notification(current_user, claim)
+
+    flash(f'Claimed {target.name}. Add any missing results, then build your '
+          f'resume.', 'success')
+    return redirect(url_for('claim_profile'))
+
+
+@app.route('/claim-profile/<int:claim_id>/release', methods=['POST'])
+@login_required
+def release_claim(claim_id):
+    """
+    Give up a claim -- the "this isn't me" path.
+
+    Self-serve and reversible by design: without it, a wrong claim needs an
+    admin, and the profile stays locked in the meantime.
+    """
+    claim = ProfileClaim.query.get_or_404(claim_id)
+    if claim.user_id != current_user.id:
+        abort(403)
+
+    name = claim.profile_name
+    was_primary = claim.is_primary
+
+    if claim.sailor:
+        claim.sailor.is_claimed = False
+        if current_user.sailor_id == claim.sailor_id:
+            current_user.sailor_id = None
+    if claim.sailor_name:
+        claim.sailor_name.is_claimed = False
+        claim.sailor_name.user_id = None
+        claim.sailor_name.claimed_at = None
+
+    db.session.delete(claim)
+    db.session.flush()
+
+    # Promote another claim so the resume keeps a canonical name.
+    if was_primary:
+        remaining = [c for c in current_user.claims if c.id != claim_id
+                     and c.status == 'approved']
+        if remaining:
+            remaining[0].is_primary = True
+
+    db.session.commit()
+    flash(f'Released {name}.', 'info')
+    return redirect(url_for('claim_profile'))
+
+
+# ============================================================================
+# ACCOUNT
+# ============================================================================
+
+@app.route('/account', methods=['GET', 'POST'])
+@login_required
+def account():
+    """Edit the name, email and school stored on the account."""
+    form = AccountForm(user=current_user, obj=current_user)
+
+    if form.validate_on_submit():
+        new_email = form.email.data.lower().strip()
+        email_changed = new_email != current_user.email
+
+        current_user.full_name = form.full_name.data.strip()
+        current_user.display_name = (form.display_name.data or '').strip() or None
+        current_user.grad_year = form.grad_year.data
+        current_user.primary_school = (form.primary_school.data or '').strip() or None
+        current_user.email = new_email
+        current_user.profile_completed_at = datetime.utcnow()
+
+        if email_changed:
+            # A new address is unproven, whatever the old one was.
+            current_user.email_verified = False
+            sent, link = send_verification_email(current_user)
             db.session.commit()
+            if sent:
+                flash('Saved. Check your new address for a confirmation link.',
+                      'success')
+            else:
+                app.logger.info('Verification link for %s: %s',
+                                current_user.email, link)
+                flash('Saved. Email sending is off, so your address stays '
+                      'unconfirmed.', 'warning')
+        else:
+            db.session.commit()
+            flash('Account updated.', 'success')
 
-            flash(f'Successfully claimed profile for {sailor.name}!', 'success')
-            return redirect(url_for('sailor_profile', sailor_id=sailor.id))
+        return redirect(url_for('account'))
 
-    # Show available unclaimed profiles
-    unclaimed_sailors = Sailor.query.filter_by(is_claimed=False).order_by(Sailor.name).all()
+    return render_template('account.html',
+                         form=form,
+                         claims=current_user.approved_claims,
+                         manual_count=ManualResult.query.filter_by(
+                             user_id=current_user.id).count(),
+                         resume_links=ResumeLink.query.filter_by(
+                             user_id=current_user.id
+                         ).order_by(desc(ResumeLink.created_at)).all())
 
-    return render_template('claim_profile.html', form=form, sailors=unclaimed_sailors)
+
+@app.route('/verify-email/<token>')
+def verify_email(token):
+    """Confirm an email address from the link we mailed."""
+    user = User.query.filter_by(email_verify_token=token).first()
+
+    if user is None:
+        flash('That confirmation link is not valid. Request a new one.', 'error')
+        return redirect(url_for('account') if current_user.is_authenticated
+                        else url_for('login'))
+
+    max_age = timedelta(hours=app.config['EMAIL_VERIFY_TOKEN_MAX_AGE_HOURS'])
+    if user.email_verify_sent_at and datetime.utcnow() - user.email_verify_sent_at > max_age:
+        flash('That confirmation link has expired. Request a new one.', 'error')
+        return redirect(url_for('account') if current_user.is_authenticated
+                        else url_for('login'))
+
+    user.email_verified = True
+    user.email_verify_token = None  # single use
+    db.session.commit()
+
+    flash('Email confirmed. You can publish a resume now.', 'success')
+    return redirect(url_for('account') if current_user.is_authenticated
+                    else url_for('login'))
+
+
+@app.route('/account/resend-verification', methods=['POST'])
+@login_required
+def resend_verification():
+    """Issue a fresh confirmation email."""
+    if current_user.email_verified:
+        flash('Your email is already confirmed.', 'info')
+        return redirect(url_for('account'))
+
+    sent, link = send_verification_email(current_user)
+    db.session.commit()
+
+    if sent:
+        flash('Confirmation email sent.', 'success')
+    else:
+        app.logger.info('Verification link for %s: %s', current_user.email, link)
+        flash('Email sending is disabled on this deployment; the confirmation '
+              'link is in the server log.', 'warning')
+
+    return redirect(url_for('account'))
+
+
+# ============================================================================
+# SELF-ADDED RESULTS
+# ============================================================================
+
+@app.route('/account/results')
+@login_required
+def manual_results():
+    """List the results this sailor added themselves."""
+    rows = ManualResult.query.filter_by(user_id=current_user.id).order_by(
+        desc(ManualResult.regatta_date)).all()
+    return render_template('manual_results.html', results=rows)
+
+
+def _possible_duplicates(user, form, exclude_id=None):
+    """
+    Scraped results that look like the one being entered.
+
+    Without this, resumes fill with doubles as the scraper backfills: the
+    sailor adds a regatta we have not scraped yet, and we scrape it later.
+    """
+    name = (form.regatta_name.data or '').strip().lower()
+    if not name:
+        return []
+
+    tokens = [t for t in name.split() if len(t) > 3][:3]
+    if not tokens:
+        return []
+
+    grouped = collect_user_entries(user)
+    candidates = []
+    for kind in (KIND_CLUBSPOT, KIND_HS, KIND_COLLEGE, KIND_MANUAL):
+        for entry in grouped.get(kind, []):
+            if exclude_id and entry.key == f'{KIND_MANUAL}:{exclude_id}':
+                continue
+            existing = entry.regatta_name.lower()
+            if all(t in existing for t in tokens):
+                if form.regatta_date.data and entry.date:
+                    # Same event, scraped under a slightly different name:
+                    # allow a few days' drift between listing and sailing.
+                    if abs((entry.date - form.regatta_date.data).days) > 10:
+                        continue
+                candidates.append(entry)
+    return candidates[:5]
+
+
+@app.route('/account/results/new', methods=['GET', 'POST'])
+@login_required
+def manual_result_new():
+    """Add a result the scrapers missed."""
+    redirect_response = require_claim_or_redirect()
+    if redirect_response:
+        return redirect_response
+
+    form = ManualResultForm()
+    duplicates = []
+
+    if form.validate_on_submit():
+        duplicates = _possible_duplicates(current_user, form)
+        # Warn once, then take it on the next submit if they insist.
+        if duplicates and not request.form.get('confirm_duplicate'):
+            flash('We may already have this regatta. Check below, then save '
+                  'again to add it anyway.', 'warning')
+        else:
+            row = ManualResult(user_id=current_user.id)
+            _apply_manual_result(form, row)
+            db.session.add(row)
+            db.session.commit()
+            flash('Result added.', 'success')
+            return redirect(url_for('manual_results'))
+
+    return render_template('manual_result_form.html',
+                         form=form, result=None, duplicates=duplicates)
+
+
+@app.route('/account/results/<int:result_id>/edit', methods=['GET', 'POST'])
+@login_required
+def manual_result_edit(result_id):
+    """Edit one of the user's own added results."""
+    row = ManualResult.query.get_or_404(result_id)
+    if row.user_id != current_user.id:
+        abort(403)
+
+    form = ManualResultForm(obj=row)
+    duplicates = []
+
+    if form.validate_on_submit():
+        _apply_manual_result(form, row)
+        db.session.commit()
+        flash('Result updated.', 'success')
+        return redirect(url_for('manual_results'))
+
+    return render_template('manual_result_form.html',
+                         form=form, result=row, duplicates=duplicates)
+
+
+@app.route('/account/results/<int:result_id>/delete', methods=['POST'])
+@login_required
+def manual_result_delete(result_id):
+    """Delete one of the user's own added results."""
+    row = ManualResult.query.get_or_404(result_id)
+    if row.user_id != current_user.id:
+        abort(403)
+
+    db.session.delete(row)
+    db.session.commit()
+    flash('Result deleted.', 'info')
+    return redirect(url_for('manual_results'))
+
+
+def _apply_manual_result(form, row):
+    """Copy form fields onto a ManualResult, normalizing blanks to NULL."""
+    row.regatta_name = form.regatta_name.data.strip()
+    row.regatta_date = form.regatta_date.data
+    row.location = (form.location.data or '').strip() or None
+    row.place_numeric = form.place_numeric.data
+    row.total_boats = form.total_boats.data
+    row.boat_type = (form.boat_type.data or '').strip() or None
+    row.division = (form.division.data or '').strip() or None
+    row.role = form.role.data or None
+    row.team_name = (form.team_name.data or '').strip() or None
+    row.crew_partner = (form.crew_partner.data or '').strip() or None
+    row.source_url = (form.source_url.data or '').strip() or None
+    row.notes = (form.notes.data or '').strip() or None
+    # An edit by the sailor re-opens the question of whether it is confirmed.
+    row.verified = False
+
+
+# ============================================================================
+# ADMIN: CLAIMS
+# ============================================================================
+
+@app.route('/admin/claims')
+@admin_required
+def admin_claims():
+    """Review claims and release wrong ones."""
+    claims = ProfileClaim.query.order_by(desc(ProfileClaim.requested_at)).limit(200).all()
+    return render_template('admin_claims.html', claims=claims)
+
+
+@app.route('/admin/claims/<int:claim_id>/revoke', methods=['POST'])
+@admin_required
+def admin_revoke_claim(claim_id):
+    """Unclaim a profile on a sailor's behalf (the dispute path)."""
+    claim = ProfileClaim.query.get_or_404(claim_id)
+    name = claim.profile_name
+
+    if claim.sailor:
+        claim.sailor.is_claimed = False
+    if claim.sailor_name:
+        claim.sailor_name.is_claimed = False
+        claim.sailor_name.user_id = None
+        claim.sailor_name.claimed_at = None
+
+    owner = claim.user
+    if owner and owner.sailor_id == claim.sailor_id:
+        owner.sailor_id = None
+
+    db.session.delete(claim)
+    db.session.commit()
+
+    flash(f'Revoked the claim on {name}.', 'info')
+    return redirect(url_for('admin_claims'))
 
 
 @app.route('/searchbar')
@@ -973,6 +1491,11 @@ def searchbar():
 # ============================================================================
 # ERROR HANDLERS
 # ============================================================================
+
+@app.errorhandler(403)
+def forbidden(e):
+    return render_template('403.html'), 403
+
 
 @app.errorhandler(404)
 def not_found(e):
@@ -993,6 +1516,88 @@ def init_db():
     """Initialize the database"""
     db.create_all()
     print("Database initialized!")
+
+
+@app.cli.command('create-admin')
+@click.argument('email')
+@click.option('--password', prompt=True, hide_input=True,
+              help='Omit to be prompted. Prefer the prompt or stdin over an '
+                   'argument, which leaks into shell history and `ps` output.')
+@click.option('--name', default=None, help='Full name for the resume header.')
+def create_admin(email, password, name):
+    """
+    Create an admin account, or promote and reset an existing one.
+
+    Idempotent, so it is safe to re-run:
+
+        flask create-admin someone@example.com
+
+    The account is marked email-verified, since an admin should not be waiting
+    on a confirmation mail that a sendless deployment never delivers.
+    """
+    email = email.lower().strip()
+    if len(password) < 8:
+        print('Refusing: password must be at least 8 characters '
+              '(the registration form enforces the same minimum).')
+        return
+
+    user = User.query.filter_by(email=email).first()
+    created = user is None
+
+    if created:
+        user = User(email=email, role='sailor')
+        db.session.add(user)
+
+    user.set_password(password)
+    user.is_admin = True
+    user.email_verified = True
+    user.email_verify_token = None
+    if name:
+        user.full_name = name
+    elif not user.full_name:
+        user.full_name = email.split('@')[0]
+
+    db.session.commit()
+    print(f"{'Created' if created else 'Updated'} admin {user.email} "
+          f"(id={user.id}, name={user.full_name!r}).")
+
+
+@app.cli.command('make-admin')
+@click.argument('email')
+def make_admin(email):
+    """
+    Grant admin rights to a user by email.
+
+    /admin and the scraper controls are admin-only now, and is_admin defaults
+    to false for everyone -- including existing accounts -- so the first admin
+    has to be promoted from here:
+
+        flask make-admin you@example.com
+    """
+    user = User.query.filter_by(email=email.lower()).first()
+    if user is None:
+        print(f"No user with email {email!r}.")
+        return
+
+    user.is_admin = True
+    db.session.commit()
+    print(f"{user.email} is now an admin.")
+
+
+@app.cli.command('verify-email-manually')
+@click.argument('email')
+def verify_email_manually(email):
+    """Mark an address confirmed without sending mail (for deployments with
+    ENABLE_EMAIL=false)."""
+    user = User.query.filter_by(email=email.lower()).first()
+    if user is None:
+        print(f"No user with email {email!r}.")
+        return
+
+    user.email_verified = True
+    user.email_verify_token = None
+    db.session.commit()
+    print(f"{user.email} is now verified.")
 
 
 @app.cli.command()

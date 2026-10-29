@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block title %}{{ 'Edit' if result else 'Add' }} Result - RegattaResume{% endblock %}
+
+{% macro field(f, col="col-12", hint=None) %}
+<div class="{{ col }} mb-3">
+    {{ f.label(class="form-label") }}
+    {{ f(class=("form-select" if f.type == 'SelectField' else "form-control") + (" is-invalid" if f.errors else "")) }}
+    {% if f.errors %}
+        <div class="invalid-feedback">{{ f.errors[0] }}</div>
+    {% elif hint %}
+        <small class="text-muted">{{ hint }}</small>
+    {% endif %}
+</div>
+{% endmacro %}
+
+{% block content %}
+<div class="container my-5">
+    <div class="row justify-content-center">
+        <div class="col-lg-8">
+            <h1 class="mb-1">{{ 'Edit Result' if result else 'Add a Result' }}</h1>
+            <p class="text-muted mb-4">
+                For regattas our scrapers missed. Added results appear on your
+                resume labelled <em>self-reported</em> &mdash; which keeps the rest of
+                your scraped results trustworthy to the coaches reading it.
+            </p>
+
+            {% if duplicates %}
+            <div class="alert alert-warning">
+                <strong>We may already have this regatta:</strong>
+                <ul class="mb-0 mt-2">
+                    {% for d in duplicates %}
+                    <li>
+                        {{ d.regatta_name }}
+                        {% if d.date %}({{ d.date.strftime('%b %Y') }}){% endif %}
+                        &mdash; {{ d.place_display }}
+                        <span class="badge bg-light text-dark">{{ d.source_label }}</span>
+                    </li>
+                    {% endfor %}
+                </ul>
+                <hr>
+                <p class="mb-0 small">
+                    If yours is different, submit again to add it anyway.
+                </p>
+            </div>
+            {% endif %}
+
+            <div class="card">
+                <div class="card-body">
+                    <form method="POST">
+                        {{ form.hidden_tag() }}
+                        {% if duplicates %}
+                            {# Set on the re-submit so the warning is not shown twice #}
+                            <input type="hidden" name="confirm_duplicate" value="1">
+                        {% endif %}
+
+                        <div class="row">
+                            {{ field(form.regatta_name, "col-12") }}
+                            {{ field(form.regatta_date, "col-sm-6") }}
+                            {{ field(form.location, "col-sm-6") }}
+                        </div>
+
+                        <hr>
+
+                        <div class="row">
+                            {{ field(form.place_numeric, "col-sm-6", "Where you finished overall.") }}
+                            {{ field(form.total_boats, "col-sm-6", "Fleet size, if you know it.") }}
+                            {{ field(form.boat_type, "col-sm-6") }}
+                            {{ field(form.division, "col-sm-6") }}
+                            {{ field(form.role, "col-sm-6") }}
+                            {{ field(form.team_name, "col-sm-6") }}
+                            {{ field(form.crew_partner, "col-12") }}
+                        </div>
+
+                        <hr>
+
+                        <div class="row">
+                            {{ field(form.source_url, "col-12", "A link to published results helps us confirm it.") }}
+                            {{ field(form.notes, "col-12") }}
+                        </div>
+
+                        <div class="d-flex justify-content-between">
+                            <a href="{{ url_for('manual_results') }}" class="btn btn-outline-secondary">
+                                Cancel
+                            </a>
+                            <button type="submit" class="btn btn-primary">
+                                {{ 'Save Changes' if result else 'Add Result' }}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

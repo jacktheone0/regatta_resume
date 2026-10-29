@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>{{ sailor.name }} - Sailing Resume</title>
+    <title>{{ display_name }} - Sailing Resume</title>
     <style>
         @page { margin: 2.5cm; size: A4; }
         body {
@@ -59,27 +59,44 @@
 </head>
 <body>
     <div class="header">
-        <h1>{{ sailor.name }}</h1>
-        {% if sailor.home_club %}<div class="subtitle">{{ sailor.home_club }}</div>{% endif %}
+        <h1>{{ display_name }}</h1>
+        {% if subtitle %}<div class="subtitle">{{ subtitle }}</div>{% endif %}
+        {% if owner and owner.grad_year %}<div class="subtitle">Class of {{ owner.grad_year }}</div>{% endif %}
         <div class="subtitle" style="margin-top: 0.5rem;">{{ resume_link.title }}</div>
     </div>
-    {% if resume_link.custom_bio or sailor.bio %}
+    {% if resume_link.custom_bio or (sailor and sailor.bio) %}
     <h2>Profile</h2>
     <p>{{ resume_link.custom_bio or sailor.bio }}</p>
     {% endif %}
+    <h2>Summary</h2>
+    <p class="result-meta">
+        {{ stats.total_regattas }} regatta{{ '' if stats.total_regattas == 1 else 's' }}
+        {% if stats.best_finish %} &bull; best finish {{ stats.best_finish }}{% endif %}
+        {% if stats.top_3_count %} &bull; {{ stats.top_3_count }} podium{{ '' if stats.top_3_count == 1 else 's' }}{% endif %}
+        {% if stats.first_year and stats.last_year %} &bull; {{ stats.first_year }}&ndash;{{ stats.last_year }}{% endif %}
+    </p>
     <h2>Competition Results</h2>
-    {% for result, regatta in results %}
+    {% for e in entries %}
     <div class="result">
         <div class="result-header">
-            <div class="result-name">{{ regatta.name }}</div>
-            <div class="placement">#{{ result.placement }}</div>
+            <div class="result-name">{{ e.regatta_name }}</div>
+            <div class="placement">{{ e.place_display }}</div>
         </div>
         <div class="result-meta">
-            {{ regatta.start_date.strftime('%B %d, %Y') }}
-            {% if regatta.location %} • {{ regatta.location }}{% endif %}
-            {% if result.boat_type %} • {{ result.boat_type }}{% endif %}
+            {{ e.date.strftime('%B %d, %Y') if e.date else 'Date not recorded' }}
+            {% if e.location %} • {{ e.location }}{% endif %}
+            {% if e.boat_or_division %} • {{ e.boat_or_division }}{% endif %}
+            {% if e.role %} • {{ e.role.capitalize() }}{% endif %}
+            {% if e.team %} • {{ e.team }}{% endif %}
+            • {{ e.source_label }}
         </div>
     </div>
     {% endfor %}
+    {% if stats.self_reported_count %}
+    <p class="result-meta">
+        Results marked &ldquo;Self-reported&rdquo; were entered by the sailor and are
+        not sourced from published scores.
+    </p>
+    {% endif %}
 </body>
 </html>

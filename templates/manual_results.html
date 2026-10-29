@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block title %}My Added Results - RegattaResume{% endblock %}
+
+{% block content %}
+<div class="container my-5">
+    <div class="d-flex justify-content-between align-items-start mb-4">
+        <div>
+            <h1 class="mb-1">Results You Added</h1>
+            <p class="text-muted mb-0">
+                Regattas our scrapers missed. These show on your resume marked
+                as self-reported.
+            </p>
+        </div>
+        <a href="{{ url_for('manual_result_new') }}" class="btn btn-primary text-nowrap">
+            Add a Result
+        </a>
+    </div>
+
+    {% if results %}
+    <div class="card">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>Regatta</th>
+                        <th>Date</th>
+                        <th>Place</th>
+                        <th>Fleet</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in results %}
+                    <tr>
+                        <td>
+                            <strong>{{ r.regatta_name }}</strong>
+                            {% if r.location %}
+                                <small class="text-muted d-block">{{ r.location }}</small>
+                            {% endif %}
+                        </td>
+                        <td class="text-nowrap">
+                            {{ r.regatta_date.strftime('%b %d, %Y') if r.regatta_date else '--' }}
+                        </td>
+                        <td class="text-nowrap">
+                            {% if r.place_numeric %}
+                                {{ r.place_numeric }}{% if r.total_boats %}/{{ r.total_boats }}{% endif %}
+                            {% else %}--{% endif %}
+                        </td>
+                        <td>{{ r.boat_type or r.division or '--' }}</td>
+                        <td>{{ r.role.capitalize() if r.role else '--' }}</td>
+                        <td>
+                            {% if r.verified %}
+                                <span class="badge bg-success">Verified</span>
+                            {% else %}
+                                <span class="badge bg-secondary">Self-reported</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end text-nowrap">
+                            <a href="{{ url_for('manual_result_edit', result_id=r.id) }}"
+                               class="btn btn-sm btn-outline-secondary">Edit</a>
+                            <form method="POST"
+                                  action="{{ url_for('manual_result_delete', result_id=r.id) }}"
+                                  class="d-inline"
+                                  onsubmit="return confirm('Delete {{ r.regatta_name }}?');">
+                                <button type="submit" class="btn btn-sm btn-outline-danger">
+                                    Delete
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="mt-4">
+        <a href="{{ url_for('resume_builder') }}" class="btn btn-success">
+            Build Resume with These
+        </a>
+    </div>
+    {% else %}
+    <div class="card">
+        <div class="card-body text-center py-5">
+            <p class="lead text-muted">You haven't added any results yet.</p>
+            <p class="text-muted">
+                If we're missing a regatta you sailed, add it here and it becomes
+                available in the resume builder.
+            </p>
+            <a href="{{ url_for('manual_result_new') }}" class="btn btn-primary">
+                Add Your First Result
+            </a>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

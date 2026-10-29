@@ -1,27 +1,66 @@
 {% extends "base.html" %}
 
-{% block title %}Resume Builder - {{ sailor.name }}{% endblock %}
+{% block title %}Resume Builder - RegattaResume{% endblock %}
+
+{% set section_titles = {
+    'clubspot': 'Club Racing (ClubSpot)',
+    'hs': 'High School',
+    'college': 'College',
+    'manual': 'Results You Added'
+} %}
 
 {% block content %}
 <div class="container my-5">
-    <h1 class="mb-4">Build Your Sailing Resume</h1>
+    <div class="d-flex justify-content-between align-items-start mb-4">
+        <div>
+            <h1 class="mb-1">Build Your Sailing Resume</h1>
+            <p class="text-muted mb-0">
+                {{ total_entries }} result{{ '' if total_entries == 1 else 's' }}
+                across {{ current_user.approved_claims|length }}
+                claimed profile{{ '' if current_user.approved_claims|length == 1 else 's' }}.
+            </p>
+        </div>
+        <a href="{{ url_for('claim_profile') }}" class="btn btn-outline-primary text-nowrap">
+            Claim another profile
+        </a>
+    </div>
+
+    {% if not current_user.email_verified %}
+    <div class="alert alert-warning">
+        <strong>Confirm your email to publish.</strong>
+        You can build and preview a resume now, but creating a shareable link
+        needs a confirmed address.
+        <a href="{{ url_for('account') }}">Go to your account</a>.
+    </div>
+    {% endif %}
+
+    {% if total_entries == 0 %}
+    <div class="card">
+        <div class="card-body text-center py-5">
+            <p class="lead text-muted">No results found on your claimed profiles.</p>
+            <a href="{{ url_for('manual_result_new') }}" class="btn btn-primary">
+                Add a result by hand
+            </a>
+        </div>
+    </div>
+    {% else %}
 
     <div class="row">
-        <!-- Left Column: Customization -->
+        <!-- Left: settings -->
         <div class="col-lg-4">
             <div class="card mb-3">
-                <div class="card-header">
-                    <h5 class="mb-0">Resume Settings</h5>
-                </div>
+                <div class="card-header"><h5 class="mb-0">Resume Settings</h5></div>
                 <div class="card-body">
                     <div class="mb-3">
                         <label for="resumeTitle" class="form-label">Title</label>
-                        <input type="text" class="form-control" id="resumeTitle" value="Sailing Resume">
+                        <input type="text" class="form-control" id="resumeTitle"
+                               value="Sailing Resume">
                     </div>
 
                     <div class="mb-3">
                         <label for="customBio" class="form-label">Custom Bio (optional)</label>
-                        <textarea class="form-control" id="customBio" rows="4" placeholder="Add a personal statement or highlights...">{{ sailor.bio or '' }}</textarea>
+                        <textarea class="form-control" id="customBio" rows="4"
+                                  placeholder="Add a personal statement or highlights..."></textarea>
                     </div>
 
                     <div class="mb-3">
@@ -35,88 +74,105 @@
                 </div>
             </div>
 
-            <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0">Select Results</h5>
-                </div>
+            <div class="card mb-3">
+                <div class="card-header"><h5 class="mb-0">Quick Select</h5></div>
                 <div class="card-body">
-                    <div class="mb-3">
-                        <button class="btn btn-sm btn-outline-primary w-100 mb-2" onclick="selectAll()">
-                            Select All
-                        </button>
-                        <button class="btn btn-sm btn-outline-secondary w-100 mb-2" onclick="selectNone()">
-                            Deselect All
-                        </button>
-                        <button class="btn btn-sm btn-outline-info w-100 mb-2" onclick="selectTop10()">
-                            Top 10 Only
-                        </button>
-                        <button class="btn btn-sm btn-outline-success w-100" onclick="selectPodiums()">
-                            Podiums Only
-                        </button>
-                    </div>
+                    <button class="btn btn-sm btn-outline-primary w-100 mb-2"
+                            onclick="selectAll(true)">Select All</button>
+                    <button class="btn btn-sm btn-outline-secondary w-100 mb-2"
+                            onclick="selectAll(false)">Deselect All</button>
+                    <button class="btn btn-sm btn-outline-info w-100 mb-2"
+                            onclick="selectByPlace(10)">Top 10 Only</button>
+                    <button class="btn btn-sm btn-outline-success w-100"
+                            onclick="selectByPlace(3)">Podiums Only</button>
 
-                    <p class="small text-muted mb-2">
-                        <span id="selectedCount">0</span> results selected
+                    <p class="small text-muted mt-3 mb-0">
+                        <strong><span id="selectedCount">0</span></strong> of
+                        {{ total_entries }} selected
                     </p>
                 </div>
             </div>
-        </div>
 
-        <!-- Right Column: Results Selection -->
-        <div class="col-lg-8">
-            <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0">Your Results</h5>
-                </div>
-                <div class="card-body">
-                    <div class="results-checklist">
-                        {% for result, regatta in results %}
-                        <div class="form-check result-item">
-                            <input
-                                class="form-check-input result-checkbox"
-                                type="checkbox"
-                                value="{{ result.id }}"
-                                id="result{{ result.id }}"
-                                data-placement="{{ result.placement }}"
-                                checked
-                            >
-                            <label class="form-check-label" for="result{{ result.id }}">
-                                <div class="result-info">
-                                    <div class="result-header">
-                                        <span class="badge
-                                            {% if result.placement == 1 %}bg-warning text-dark
-                                            {% elif result.placement == 2 %}bg-secondary
-                                            {% elif result.placement == 3 %}bg-info
-                                            {% else %}bg-light text-dark
-                                            {% endif %}">
-                                            #{{ result.placement }}
-                                        </span>
-                                        <strong>{{ regatta.name }}</strong>
-                                    </div>
-                                    <div class="result-details">
-                                        {{ regatta.start_date.strftime('%b %d, %Y') }}
-                                        {% if regatta.location %}| {{ regatta.location }}{% endif %}
-                                        {% if result.boat_type %}| {{ result.boat_type }}{% endif %}
-                                    </div>
-                                </div>
-                            </label>
-                        </div>
-                        {% endfor %}
-                    </div>
-                </div>
-            </div>
-
-            <!-- Action Buttons -->
-            <div class="mt-4 text-end">
+            <div class="d-grid gap-2">
                 <button class="btn btn-lg btn-success" onclick="createShareableLink()">
                     Create Shareable Link
                 </button>
-                <button class="btn btn-lg btn-primary" onclick="downloadPDF()">
+                <button class="btn btn-lg btn-outline-primary" onclick="downloadPDF()">
                     Download PDF
                 </button>
             </div>
         </div>
+
+        <!-- Right: result selection, grouped by source -->
+        <div class="col-lg-8">
+            {% for kind in section_order %}
+                {% set entries = grouped.get(kind, []) %}
+                {% if entries %}
+                <div class="card mb-3">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">
+                            {{ section_titles[kind] }}
+                            <span class="badge bg-secondary">{{ entries|length }}</span>
+                        </h5>
+                        <div>
+                            <button class="btn btn-sm btn-link p-0 me-2"
+                                    onclick="selectSection('{{ kind }}', true)">All</button>
+                            <button class="btn btn-sm btn-link p-0"
+                                    onclick="selectSection('{{ kind }}', false)">None</button>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="results-checklist">
+                            {% for e in entries %}
+                            <div class="form-check result-item">
+                                <input class="form-check-input result-checkbox"
+                                       type="checkbox"
+                                       value="{{ e.key }}"
+                                       id="r-{{ e.key }}"
+                                       data-kind="{{ kind }}"
+                                       data-place="{{ e.place_numeric if e.place_numeric is not none else '' }}"
+                                       checked>
+                                <label class="form-check-label" for="r-{{ e.key }}">
+                                    <div class="result-info">
+                                        <div class="result-header">
+                                            <span class="badge
+                                                {% if e.place_numeric == 1 %}bg-warning text-dark
+                                                {% elif e.is_podium %}bg-info
+                                                {% else %}bg-light text-dark{% endif %}">
+                                                {{ e.place_display }}
+                                            </span>
+                                            <strong>{{ e.regatta_name }}</strong>
+                                            {% if e.is_self_reported and not e.is_verified %}
+                                                <span class="badge bg-secondary">self-reported</span>
+                                            {% endif %}
+                                        </div>
+                                        <div class="result-details">
+                                            {% if e.date %}{{ e.date.strftime('%b %d, %Y') }}{% endif %}
+                                            {% if e.location %}| {{ e.location }}{% endif %}
+                                            {% if e.boat_or_division %}| {{ e.boat_or_division }}{% endif %}
+                                            {% if e.role %}| {{ e.role.capitalize() }}{% endif %}
+                                            {% if e.team %}| {{ e.team }}{% endif %}
+                                        </div>
+                                    </div>
+                                </label>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+            {% endfor %}
+
+            {% if not grouped.get('manual') %}
+            <div class="alert alert-light border">
+                Missing a regatta?
+                <a href="{{ url_for('manual_result_new') }}">Add it by hand</a>
+                and it shows up here.
+            </div>
+            {% endif %}
+        </div>
     </div>
+    {% endif %}
 </div>
 
 <!-- Success Modal -->
@@ -131,9 +187,7 @@
                 <p>Your shareable resume link:</p>
                 <div class="input-group mb-3">
                     <input type="text" class="form-control" id="shareableLink" readonly>
-                    <button class="btn btn-outline-secondary" onclick="copyLink()">
-                        Copy
-                    </button>
+                    <button class="btn btn-outline-secondary" onclick="copyLink(event)">Copy</button>
                 </div>
                 <a id="viewResumeLink" href="#" target="_blank" class="btn btn-primary">
                     View Resume
@@ -144,154 +198,113 @@
 </div>
 
 <style>
-.results-checklist {
-    max-height: 600px;
-    overflow-y: auto;
-}
-
-.result-item {
-    padding: 1rem;
-    border-bottom: 1px solid #eee;
-    margin-bottom: 0;
-}
-
-.result-item:hover {
-    background: #f8f9fa;
-}
-
-.result-info {
-    flex: 1;
-    margin-left: 0.5rem;
-}
-
-.result-header {
-    margin-bottom: 0.25rem;
-}
-
-.result-details {
-    font-size: 0.9rem;
-    color: #666;
-}
+.results-checklist { max-height: 420px; overflow-y: auto; }
+.result-item { padding: 0.75rem 1rem; border-bottom: 1px solid #eee; margin-bottom: 0; }
+.result-item:last-child { border-bottom: none; }
+.result-item:hover { background: #f8f9fa; }
+.result-info { flex: 1; margin-left: 0.5rem; }
+.result-header { margin-bottom: 0.25rem; }
+.result-details { font-size: 0.85rem; color: #666; }
 </style>
 
 <script>
-const sailorId = {{ sailor.id }};
+const boxes = () => Array.from(document.querySelectorAll('.result-checkbox'));
 
 function updateSelectedCount() {
-    const count = document.querySelectorAll('.result-checkbox:checked').length;
-    document.getElementById('selectedCount').textContent = count;
+    const n = boxes().filter(cb => cb.checked).length;
+    document.getElementById('selectedCount').textContent = n;
 }
 
-function selectAll() {
-    document.querySelectorAll('.result-checkbox').forEach(cb => cb.checked = true);
+function selectAll(state) {
+    boxes().forEach(cb => cb.checked = state);
     updateSelectedCount();
 }
 
-function selectNone() {
-    document.querySelectorAll('.result-checkbox').forEach(cb => cb.checked = false);
+function selectSection(kind, state) {
+    boxes().filter(cb => cb.dataset.kind === kind)
+           .forEach(cb => cb.checked = state);
     updateSelectedCount();
 }
 
-function selectTop10() {
-    document.querySelectorAll('.result-checkbox').forEach(cb => {
-        cb.checked = parseInt(cb.dataset.placement) <= 10;
+function selectByPlace(max) {
+    boxes().forEach(cb => {
+        const place = parseInt(cb.dataset.place, 10);
+        // Results with no recorded place cannot satisfy a cutoff
+        cb.checked = !isNaN(place) && place <= max;
     });
     updateSelectedCount();
 }
 
-function selectPodiums() {
-    document.querySelectorAll('.result-checkbox').forEach(cb => {
-        cb.checked = parseInt(cb.dataset.placement) <= 3;
-    });
-    updateSelectedCount();
-}
-
+// Qualified keys ("hs:88"), not bare ints: ids collide across the source tables
 function getSelectedResults() {
-    return Array.from(document.querySelectorAll('.result-checkbox:checked'))
-        .map(cb => parseInt(cb.value));
+    return boxes().filter(cb => cb.checked).map(cb => cb.value);
+}
+
+function payload() {
+    return {
+        title: document.getElementById('resumeTitle').value,
+        custom_bio: document.getElementById('customBio').value,
+        selected_result_ids: getSelectedResults(),
+        template_style: document.getElementById('templateStyle').value
+    };
+}
+
+async function postResume() {
+    const response = await fetch('/api/resume-link/create', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload())
+    });
+    return {ok: response.ok, body: await response.json()};
 }
 
 async function createShareableLink() {
-    const data = {
-        sailor_id: sailorId,
-        title: document.getElementById('resumeTitle').value,
-        custom_bio: document.getElementById('customBio').value,
-        selected_result_ids: getSelectedResults(),
-        template_style: document.getElementById('templateStyle').value
-    };
-
+    if (getSelectedResults().length === 0) {
+        alert('Select at least one result first.');
+        return;
+    }
     try {
-        const response = await fetch('/api/resume-link/create', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(data)
-        });
-
-        const result = await response.json();
-
-        if (result.success) {
-            document.getElementById('shareableLink').value = result.url;
-            document.getElementById('viewResumeLink').href = result.url;
-
-            const modal = new bootstrap.Modal(document.getElementById('successModal'));
-            modal.show();
+        const {body} = await postResume();
+        if (body.success) {
+            document.getElementById('shareableLink').value = body.url;
+            document.getElementById('viewResumeLink').href = body.url;
+            new bootstrap.Modal(document.getElementById('successModal')).show();
         } else {
-            alert('Error creating resume: ' + (result.error || 'Unknown error'));
+            alert(body.error || 'Unknown error');
         }
     } catch (error) {
         alert('Error: ' + error.message);
     }
-}
-
-function copyLink() {
-    const input = document.getElementById('shareableLink');
-    input.select();
-    document.execCommand('copy');
-
-    const btn = event.target;
-    const originalText = btn.textContent;
-    btn.textContent = 'Copied!';
-    setTimeout(() => btn.textContent = originalText, 2000);
 }
 
 async function downloadPDF() {
-    // First create the link, then download PDF
-    const data = {
-        sailor_id: sailorId,
-        title: document.getElementById('resumeTitle').value,
-        custom_bio: document.getElementById('customBio').value,
-        selected_result_ids: getSelectedResults(),
-        template_style: document.getElementById('templateStyle').value
-    };
-
+    if (getSelectedResults().length === 0) {
+        alert('Select at least one result first.');
+        return;
+    }
     try {
-        const response = await fetch('/api/resume-link/create', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(data)
-        });
-
-        const result = await response.json();
-
-        if (result.success) {
-            // Download PDF
-            window.location.href = `/api/resume-link/${result.token}/pdf`;
+        const {body} = await postResume();
+        if (body.success) {
+            window.location.href = `/api/resume-link/${body.token}/pdf`;
+        } else {
+            alert(body.error || 'Unknown error');
         }
     } catch (error) {
         alert('Error: ' + error.message);
     }
 }
 
-// Update count on page load
-updateSelectedCount();
+function copyLink(event) {
+    const input = document.getElementById('shareableLink');
+    input.select();
+    document.execCommand('copy');
+    const btn = event.target;
+    const original = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = original, 2000);
+}
 
-// Update count when checkboxes change
-document.querySelectorAll('.result-checkbox').forEach(cb => {
-    cb.addEventListener('change', updateSelectedCount);
-});
+boxes().forEach(cb => cb.addEventListener('change', updateSelectedCount));
+updateSelectedCount();
 </script>
 {% endblock %}

@@ -1,20 +1,25 @@
 {% extends "base.html" %}
 
-{% block title %}{{ sailor.name }} - Sailing Resume{% endblock %}
+{% block title %}{{ display_name }} - Sailing Resume{% endblock %}
 
 {% block content %}
 <div class="resume-minimal">
     <div class="container my-5" style="max-width: 700px;">
         <!-- Header -->
         <header class="mb-5">
-            <h1>{{ sailor.name }}</h1>
-            {% if sailor.home_club %}
-                <p>{{ sailor.home_club }}</p>
-            {% endif %}
+            <h1>{{ display_name }}</h1>
+            {% if subtitle %}<p>{{ subtitle }}</p>{% endif %}
+            <p class="meta">
+                {{ stats.total_regattas }} regatta{{ '' if stats.total_regattas == 1 else 's' }}
+                {% if stats.best_finish %} &middot; best {{ stats.best_finish }}{% endif %}
+                {% if stats.first_year and stats.last_year %}
+                    &middot; {{ stats.first_year }}&ndash;{{ stats.last_year }}
+                {% endif %}
+            </p>
         </header>
 
         <!-- Bio -->
-        {% if resume_link.custom_bio or sailor.bio %}
+        {% if resume_link.custom_bio or (sailor and sailor.bio) %}
         <section class="mb-5">
             <p>{{ resume_link.custom_bio or sailor.bio }}</p>
         </section>
@@ -25,14 +30,22 @@
             <h2>Results</h2>
 
             <table class="results-table">
-                {% for result, regatta in results %}
+                {% for e in entries %}
                 <tr>
-                    <td class="placement">{{ result.placement }}</td>
+                    <td class="placement">{{ e.place_display }}</td>
                     <td class="regatta-info">
-                        <div class="regatta-name">{{ regatta.name }}</div>
+                        <div class="regatta-name">
+                            {% if e.link %}
+                                <a href="{{ e.link }}" target="_blank" rel="noopener">{{ e.regatta_name }}</a>
+                            {% else %}
+                                {{ e.regatta_name }}
+                            {% endif %}
+                        </div>
                         <div class="regatta-meta">
-                            {{ regatta.start_date.strftime('%Y') }}
-                            {% if result.boat_type %} • {{ result.boat_type }}{% endif %}
+                            {{ e.date.strftime('%Y') if e.date else '' }}
+                            {% if e.boat_or_division %} &middot; {{ e.boat_or_division }}{% endif %}
+                            {% if e.role %} &middot; {{ e.role.capitalize() }}{% endif %}
+                            &middot; {{ e.source_label }}
                         </div>
                     </td>
                 </tr>
@@ -70,6 +83,11 @@
     line-height: 1.6;
 }
 
+.resume-minimal .meta {
+    font-size: 0.875rem;
+    color: #999;
+}
+
 .results-table {
     width: 100%;
     border-collapse: collapse;
@@ -89,9 +107,9 @@
 }
 
 .placement {
-    width: 80px;
+    width: 90px;
     font-weight: 700;
-    font-size: 1.5rem;
+    font-size: 1.25rem;
     color: #000;
 }
 

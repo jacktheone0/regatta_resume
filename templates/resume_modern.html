@@ -1,21 +1,24 @@
 {% extends "base.html" %}
 
-{% block title %}{{ sailor.name }} - Sailing Resume{% endblock %}
+{% block title %}{{ display_name }} - Sailing Resume{% endblock %}
 
 {% block content %}
 <div class="resume-modern">
     <div class="container my-5">
         <!-- Header -->
         <div class="resume-header text-center mb-5">
-            <h1 class="display-4 mb-2">{{ sailor.name }}</h1>
-            {% if sailor.home_club %}
-                <p class="lead text-muted">{{ sailor.home_club }}</p>
+            <h1 class="display-4 mb-2">{{ display_name }}</h1>
+            {% if subtitle %}
+                <p class="lead text-muted">{{ subtitle }}</p>
+            {% endif %}
+            {% if owner and owner.grad_year %}
+                <p class="text-muted mb-0">Class of {{ owner.grad_year }}</p>
             {% endif %}
             <div class="resume-badge">{{ resume_link.title }}</div>
         </div>
 
         <!-- Bio -->
-        {% if resume_link.custom_bio or sailor.bio %}
+        {% if resume_link.custom_bio or (sailor and sailor.bio) %}
         <div class="card mb-4">
             <div class="card-body">
                 <h5 class="card-title">About</h5>
@@ -24,6 +27,26 @@
         </div>
         {% endif %}
 
+        <!-- Summary -->
+        <div class="row mb-4 text-center">
+            <div class="col-3"><div class="summary-box">
+                <div class="summary-value">{{ stats.total_regattas }}</div>
+                <div class="summary-label">Regattas</div>
+            </div></div>
+            <div class="col-3"><div class="summary-box">
+                <div class="summary-value">{{ stats.best_finish or '--' }}</div>
+                <div class="summary-label">Best Finish</div>
+            </div></div>
+            <div class="col-3"><div class="summary-box">
+                <div class="summary-value">{{ stats.top_3_count }}</div>
+                <div class="summary-label">Podiums</div>
+            </div></div>
+            <div class="col-3"><div class="summary-box">
+                <div class="summary-value">{{ stats.years_active or '--' }}</div>
+                <div class="summary-label">Years Active</div>
+            </div></div>
+        </div>
+
         <!-- Results -->
         <div class="card">
             <div class="card-header bg-primary text-white">
@@ -31,20 +54,30 @@
             </div>
             <div class="card-body p-0">
                 <div class="timeline">
-                    {% for result, regatta in results %}
+                    {% for e in entries %}
                     <div class="timeline-item">
-                        <div class="timeline-marker {% if result.placement <= 3 %}podium{% endif %}">
-                            {{ result.placement }}
+                        <div class="timeline-marker {% if e.is_podium %}podium{% endif %}">
+                            {{ e.place_display }}
                         </div>
                         <div class="timeline-content">
                             <div class="timeline-header">
-                                <strong>{{ regatta.name }}</strong>
-                                <span class="text-muted">{{ regatta.start_date.strftime('%B %Y') }}</span>
+                                <strong>
+                                    {% if e.link %}
+                                        <a href="{{ e.link }}" target="_blank" rel="noopener">{{ e.regatta_name }}</a>
+                                    {% else %}
+                                        {{ e.regatta_name }}
+                                    {% endif %}
+                                </strong>
+                                <span class="text-muted">
+                                    {{ e.date.strftime('%B %Y') if e.date else '' }}
+                                </span>
                             </div>
                             <div class="timeline-details">
-                                {% if regatta.location %}<span>{{ regatta.location }}</span>{% endif %}
-                                {% if result.boat_type %}<span>{{ result.boat_type }}</span>{% endif %}
-                                {% if result.role %}<span>{{ result.role.capitalize() }}</span>{% endif %}
+                                {% if e.location %}<span>{{ e.location }}</span>{% endif %}
+                                {% if e.boat_or_division %}<span>{{ e.boat_or_division }}</span>{% endif %}
+                                {% if e.role %}<span>{{ e.role.capitalize() }}</span>{% endif %}
+                                {% if e.team %}<span>{{ e.team }}</span>{% endif %}
+                                <span class="source-tag">{{ e.source_label }}</span>
                             </div>
                         </div>
                     </div>
@@ -52,6 +85,14 @@
                 </div>
             </div>
         </div>
+
+        {% if stats.self_reported_count %}
+        <p class="text-muted small mt-3 mb-0">
+            {{ stats.self_reported_count }} result{{ '' if stats.self_reported_count == 1 else 's' }}
+            marked <em>Self-reported</em> {{ 'was' if stats.self_reported_count == 1 else 'were' }}
+            entered by the sailor and not sourced from published scores.
+        </p>
+        {% endif %}
 
         <!-- Footer -->
         <div class="text-center mt-5 text-muted">
@@ -83,6 +124,27 @@
     margin-top: 1rem;
 }
 
+.summary-box {
+    background: white;
+    padding: 1.25rem 0.5rem;
+    border-radius: 0.5rem;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+.summary-value {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: #0066cc;
+    line-height: 1.1;
+}
+
+.summary-label {
+    font-size: 0.8rem;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
 .timeline {
     padding: 2rem;
 }
@@ -106,8 +168,9 @@
     align-items: center;
     justify-content: center;
     font-weight: bold;
-    font-size: 1.2rem;
+    font-size: 1rem;
     margin-right: 1.5rem;
+    flex-shrink: 0;
 }
 
 .timeline-marker.podium {
@@ -123,6 +186,7 @@
     display: flex;
     justify-content: space-between;
     margin-bottom: 0.5rem;
+    gap: 1rem;
 }
 
 .timeline-details span {
@@ -130,6 +194,13 @@
     margin-right: 1rem;
     color: #666;
     font-size: 0.9rem;
+}
+
+.timeline-details .source-tag {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #999;
 }
 
 @media print {

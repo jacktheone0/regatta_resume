@@ -1,11 +1,331 @@
 """
 Utility functions for RegattaResume
 """
-from models import db, Result, Regatta
+from models import (db, Result, Regatta, HSResult, CollegeResult, ManualResult,
+                    SailorName)
 from datetime import datetime, timedelta
-from sqlalchemy import func, desc
+from dataclasses import dataclass
+from typing import Optional
 import tempfile
 import os
+
+from sqlalchemy import func, desc
+
+
+# ============================================================================
+# RESUME ENTRIES
+#
+# A resume can mix four sources whose rows have incompatible shapes and whose
+# primary keys collide (hs_results.id 5 and college_results.id 5 are different
+# regattas). Everything downstream -- the builder, the shared page, the PDF --
+# goes through the qualified key and the normalized ResumeEntry below, so there
+# is exactly one place that knows the per-source quirks.
+# ============================================================================
+
+KIND_CLUBSPOT = 'clubspot'
+KIND_HS = 'hs'
+KIND_COLLEGE = 'college'
+KIND_MANUAL = 'manual'
+
+SOURCE_LABELS = {
+    KIND_CLUBSPOT: 'ClubSpot',
+    KIND_HS: 'High School',
+    KIND_COLLEGE: 'College',
+    KIND_MANUAL: 'Self-reported',
+}
+
+
+@dataclass
+class ResumeEntry:
+    """One regatta result, normalized across all four sources."""
+    key: str
+    kind: str
+    regatta_name: str
+    date: Optional[object] = None          # datetime.date
+    place_numeric: Optional[int] = None
+    total_boats: Optional[int] = None
+    boat_or_division: Optional[str] = None
+    role: Optional[str] = None
+    team: Optional[str] = None
+    location: Optional[str] = None
+    link: Optional[str] = None
+    notes: Optional[str] = None
+    is_self_reported: bool = False
+    is_verified: bool = True
+
+    @property
+    def source_label(self):
+        return SOURCE_LABELS.get(self.kind, self.kind)
+
+    @property
+    def place_display(self):
+        """
+        "3/42" when the fleet size is known, else "3".
+
+        ClubSpot rows carry no fleet size at all, while HS/college rows carry
+        both halves -- hence the two shapes.
+        """
+        if self.place_numeric is None:
+            return '--'
+        if self.total_boats:
+            return f'{self.place_numeric}/{self.total_boats}'
+        return str(self.place_numeric)
+
+    @property
+    def year(self):
+        return self.date.year if self.date else None
+
+    @property
+    def is_podium(self):
+        return self.place_numeric is not None and self.place_numeric <= 3
+
+
+def make_result_key(kind, obj_id):
+    """Qualified key for a result row, e.g. "hs:8841"."""
+    return f'{kind}:{obj_id}'
+
+
+def parse_result_key(raw):
+    """
+    Parse a qualified key into (kind, id).
+
+    A bare int is a legacy ClubSpot `Result.id` from before the keys were
+    qualified; migration 010 rewrites stored rows, but accept them anyway so an
+    un-migrated row or an old client never silently drops results.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, int):
+        return (KIND_CLUBSPOT, raw)
+
+    text = str(raw)
+    if ':' not in text:
+        return (KIND_CLUBSPOT, int(text)) if text.isdigit() else None
+
+    kind, _, id_part = text.partition(':')
+    if kind not in SOURCE_LABELS or not id_part.isdigit():
+        return None
+    return (kind, int(id_part))
+
+
+def _entry_from_clubspot(result, regatta):
+    return ResumeEntry(
+        key=make_result_key(KIND_CLUBSPOT, result.id),
+        kind=KIND_CLUBSPOT,
+        regatta_name=regatta.name,
+        date=regatta.start_date,
+        place_numeric=result.placement,
+        total_boats=None,  # ClubSpot results carry no fleet size
+        boat_or_division=result.boat_type or result.division,
+        role=result.role,
+        team=result.team_name,
+        location=regatta.location,
+        link=regatta.source_url,
+    )
+
+
+def _entry_from_scored(row, kind):
+    """HSResult / CollegeResult share a shape."""
+    return ResumeEntry(
+        key=make_result_key(kind, row.id),
+        kind=kind,
+        regatta_name=row.regatta_name,
+        date=row.regatta_date,
+        place_numeric=row.place_numeric,
+        total_boats=row.total_boats,
+        boat_or_division=row.division,
+        role=row.position,
+        team=row.school,
+        link=row.regatta_link,
+    )
+
+
+def _entry_from_manual(row):
+    return ResumeEntry(
+        key=make_result_key(KIND_MANUAL, row.id),
+        kind=KIND_MANUAL,
+        regatta_name=row.regatta_name,
+        date=row.regatta_date,
+        place_numeric=row.place_numeric,
+        total_boats=row.total_boats,
+        boat_or_division=row.boat_type or row.division,
+        role=row.role,
+        team=row.team_name,
+        location=row.location,
+        link=row.source_url,
+        notes=row.notes,
+        is_self_reported=True,
+        is_verified=bool(row.verified),
+    )
+
+
+def _sort_entries(entries):
+    """Newest first; undated entries last rather than crashing the sort."""
+    return sorted(
+        entries,
+        key=lambda e: (e.date is not None, e.date or datetime.min.date()),
+        reverse=True
+    )
+
+
+def collect_user_entries(user):
+    """
+    Every result available to this user, grouped by kind, for the builder.
+
+    Pulls across all claimed profiles -- a sailor usually holds a ClubSpot
+    profile and one or more HS/college names, and the point of the resume is to
+    put them on one page.
+    """
+    grouped = {k: [] for k in (KIND_CLUBSPOT, KIND_HS, KIND_COLLEGE, KIND_MANUAL)}
+    if user is None or not user.is_authenticated:
+        return grouped
+
+    sailor_ids = [s.id for s in user.claimed_sailors]
+    name_ids = [n.id for n in user.claimed_names]
+
+    if sailor_ids:
+        rows = db.session.query(Result, Regatta).join(
+            Regatta, Result.regatta_id == Regatta.id
+        ).filter(Result.sailor_id.in_(sailor_ids)).all()
+        grouped[KIND_CLUBSPOT] = [_entry_from_clubspot(r, g) for r, g in rows]
+
+    if name_ids:
+        grouped[KIND_HS] = [
+            _entry_from_scored(r, KIND_HS) for r in
+            HSResult.query.filter(HSResult.sailor_name_id.in_(name_ids)).all()
+        ]
+        grouped[KIND_COLLEGE] = [
+            _entry_from_scored(r, KIND_COLLEGE) for r in
+            CollegeResult.query.filter(CollegeResult.sailor_name_id.in_(name_ids)).all()
+        ]
+
+    grouped[KIND_MANUAL] = [
+        _entry_from_manual(r) for r in
+        ManualResult.query.filter_by(user_id=user.id).all()
+    ]
+
+    return {k: _sort_entries(v) for k, v in grouped.items()}
+
+
+def resolve_resume_entries(resume_link):
+    """
+    The entries a resume should display, newest first.
+
+    One grouped query per kind rather than one per selected row. Used by both
+    the shared page and the PDF export, which previously duplicated this
+    selection logic and could drift apart.
+    """
+    selected = resume_link.selected_result_ids
+
+    if not selected:
+        return _default_entries(resume_link)
+
+    by_kind = {}
+    for raw in selected:
+        parsed = parse_result_key(raw)
+        if parsed:
+            by_kind.setdefault(parsed[0], []).append(parsed[1])
+
+    entries = []
+
+    if by_kind.get(KIND_CLUBSPOT):
+        rows = db.session.query(Result, Regatta).join(
+            Regatta, Result.regatta_id == Regatta.id
+        ).filter(Result.id.in_(by_kind[KIND_CLUBSPOT])).all()
+        entries += [_entry_from_clubspot(r, g) for r, g in rows]
+
+    if by_kind.get(KIND_HS):
+        entries += [_entry_from_scored(r, KIND_HS) for r in
+                    HSResult.query.filter(HSResult.id.in_(by_kind[KIND_HS])).all()]
+
+    if by_kind.get(KIND_COLLEGE):
+        entries += [_entry_from_scored(r, KIND_COLLEGE) for r in
+                    CollegeResult.query.filter(
+                        CollegeResult.id.in_(by_kind[KIND_COLLEGE])).all()]
+
+    if by_kind.get(KIND_MANUAL):
+        # Scope manual results to the resume's owner: these ids come from a
+        # stored selection, and a result the owner no longer owns must not
+        # keep rendering on their page.
+        query = ManualResult.query.filter(ManualResult.id.in_(by_kind[KIND_MANUAL]))
+        if resume_link.user_id:
+            query = query.filter(ManualResult.user_id == resume_link.user_id)
+        entries += [_entry_from_manual(r) for r in query.all()]
+
+    return _sort_entries(entries)
+
+
+def _default_entries(resume_link):
+    """Everything the owner has, for a resume saved with no explicit selection."""
+    if resume_link.user_id and resume_link.user:
+        grouped = collect_user_entries(resume_link.user)
+        return _sort_entries([e for group in grouped.values() for e in group])
+
+    # Legacy link with no user_id: fall back to the ClubSpot sailor it was
+    # created for.
+    if resume_link.sailor_id:
+        rows = db.session.query(Result, Regatta).join(
+            Regatta, Result.regatta_id == Regatta.id
+        ).filter(Result.sailor_id == resume_link.sailor_id).all()
+        return _sort_entries([_entry_from_clubspot(r, g) for r, g in rows])
+
+    return []
+
+
+def resume_display_name(resume_link):
+    """
+    Name to print at the top of a resume.
+
+    The account's chosen name wins over the scraped spelling: the scraped rows
+    carry whatever the regatta organizers typed.
+    """
+    if resume_link.user:
+        return resume_link.user.resume_name
+    if resume_link.sailor:
+        return resume_link.sailor.name
+    return 'Sailing Resume'
+
+
+def resume_subtitle(resume_link):
+    """Club/school line under the name, if we have one."""
+    user = resume_link.user
+    if user and user.primary_school:
+        return user.primary_school
+    if resume_link.sailor and resume_link.sailor.home_club:
+        return resume_link.sailor.home_club
+    if user:
+        for name in user.claimed_names:
+            if name.school:
+                return name.school
+    return None
+
+
+def stats_from_entries(entries):
+    """
+    Resume stats computed from the displayed entries.
+
+    `calculate_stats` only knows ClubSpot `Result` rows, so it reports zeros for
+    an HS/college sailor. This works off whatever is actually on the resume.
+    """
+    placements = [e.place_numeric for e in entries if e.place_numeric is not None]
+    years = [e.year for e in entries if e.year]
+
+    return {
+        'total_regattas': len(entries),
+        'best_finish': min(placements) if placements else None,
+        'average_placement': round(sum(placements) / len(placements), 1) if placements else None,
+        'top_3_count': len([p for p in placements if p <= 3]),
+        'top_10_count': len([p for p in placements if p <= 10]),
+        'years_active': (max(years) - min(years) + 1) if years else None,
+        'first_year': min(years) if years else None,
+        'last_year': max(years) if years else None,
+        'self_reported_count': len([e for e in entries if e.is_self_reported]),
+        'source_counts': {
+            SOURCE_LABELS[k]: len([e for e in entries if e.kind == k])
+            for k in (KIND_CLUBSPOT, KIND_HS, KIND_COLLEGE, KIND_MANUAL)
+            if any(e.kind == k for e in entries)
+        },
+    }
 
 
 def calculate_stats(sailor):
@@ -213,29 +533,18 @@ def generate_pdf(resume_link):
     from weasyprint import HTML
     import tempfile
 
-    sailor = resume_link.sailor
-
-    # Get selected results
-    if resume_link.selected_result_ids:
-        results = db.session.query(Result, Regatta).join(
-            Regatta, Result.regatta_id == Regatta.id
-        ).filter(
-            Result.id.in_(resume_link.selected_result_ids)
-        ).order_by(desc(Regatta.start_date)).all()
-    else:
-        results = db.session.query(Result, Regatta).join(
-            Regatta, Result.regatta_id == Regatta.id
-        ).filter(
-            Result.sailor_id == sailor.id
-        ).order_by(desc(Regatta.start_date)).all()
+    entries = resolve_resume_entries(resume_link)
 
     # Render HTML template
     html_content = render_template(
         f'resume_{resume_link.template_style}_pdf.html',
-        sailor=sailor,
+        sailor=resume_link.sailor,
+        owner=resume_link.user,
+        display_name=resume_display_name(resume_link),
+        subtitle=resume_subtitle(resume_link),
         resume_link=resume_link,
-        results=results,
-        stats=calculate_stats(sailor)
+        entries=entries,
+        stats=stats_from_entries(entries)
     )
 
     # Generate PDF
