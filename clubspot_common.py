@@ -1,5 +1,5 @@
 """
-ClubSpot regatta enumeration and results-row parsing, shared by the server
+ClubSpot regatta enumeration and results-table parsing, shared by the server
 scraper (scraper.py), the catalogue updater (clubspot_catalog.py) and the
 local GUI (local_scraper/clubspot_gui.py).
 
@@ -35,7 +35,7 @@ PARSE_CREDENTIALS = {
     '_InstallationId': 'ce500aaa-c2a0-4d06-a9e3-1a558a606542',
 }
 
-# Clubs whose regattas are never scraped
+# Clubs whose regattas are never scraped (ClubSpot's own test clubs)
 EXCLUDED_CLUB_IDS = ['HCyTbbCF4n', 'XVgOrNASDY', 'ecNpKgrusD',
                      'GTKaJKeque', 'TTBnsppUug', 'pnBFlwJ2Mf']
 
@@ -112,6 +112,24 @@ def parse_retry_after(value):
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+def regatta_status(start_date, end_date, today, max_in_progress_days=120):
+    """
+    'upcoming' | 'in_progress' | 'final' from a regatta's dates.
+
+    A regatta is in progress when it has started and its end date is still
+    ahead -- a series posting standings week by week. ClubSpot end dates are
+    not always real (placeholder years have been seen), so a regatta that
+    started more than max_in_progress_days ago is treated as final whatever
+    its end date says.
+    """
+    if start_date and start_date > today:
+        return 'upcoming'
+    if end_date and end_date > today:
+        if start_date is None or (today - start_date).days <= max_in_progress_days:
+            return 'in_progress'
+    return 'final'
 
 
 # ---------------------------------------------------------------------------
@@ -374,90 +392,285 @@ def sitemap_regatta_ids(timeout=20, max_children=50):
 
 
 # ---------------------------------------------------------------------------
-# Results page parsing
+# Results page harvesting
 # ---------------------------------------------------------------------------
 
-# Runs in the results page; returns every data row as pipe-joined cell text,
-# across the three table technologies ClubSpot has used
+# Runs in the results page. Returns every table it can find as
+# {headers: [...], rows: [[cell, ...], ...]} across the three table
+# technologies ClubSpot has used. Cells keep their position (no filtering of
+# blanks) so columns can be mapped by header; multi-line cells keep their
+# newlines, which is how a skipper and crew share one cell.
 HARVEST_JS = r"""
-const out = new Set();
+const tables = [];
+const text = el => (el.innerText || el.textContent || "").trim();
 
-// 1) Classic tables: only rows in <tbody> that have at least one <td>
+// 1) Classic tables
 document.querySelectorAll("table").forEach(tbl => {
+    const headers = Array.from(tbl.querySelectorAll("thead th, thead td")).map(text);
+    const rows = [];
     tbl.querySelectorAll("tbody tr").forEach(tr => {
         const tds = Array.from(tr.querySelectorAll("td"));
         if (tds.length === 0) return;
-        const parts = tds.map(td => (td.innerText || td.textContent || "").trim()).filter(Boolean);
-        const line = parts.join(" | ").trim();
-        if (line) out.add(line);
+        const cells = tds.map(text);
+        if (cells.some(Boolean)) rows.push(cells);
     });
+    if (rows.length) tables.push({headers: headers, rows: rows});
 });
 
 // 2) WAI-ARIA grids
-document.querySelectorAll("[role='row']").forEach(row => {
-    const cells = Array.from(row.querySelectorAll("[role='gridcell'], [role='cell']"));
-    if (cells.length === 0) return;
-    const parts = cells.map(c => (c.innerText || c.textContent || "").trim()).filter(Boolean);
-    const line = parts.join(" | ").trim();
-    if (line) out.add(line);
+document.querySelectorAll("[role='grid'], [role='table']").forEach(grid => {
+    const headers = Array.from(grid.querySelectorAll("[role='columnheader']")).map(text);
+    const rows = [];
+    grid.querySelectorAll("[role='row']").forEach(row => {
+        const cells = Array.from(row.querySelectorAll("[role='gridcell'], [role='cell']")).map(text);
+        if (cells.length && cells.some(Boolean)) rows.push(cells);
+    });
+    if (rows.length) tables.push({headers: headers, rows: rows});
 });
 
 // 3) AG Grid
-document.querySelectorAll(".ag-row").forEach(row => {
-    const cells = Array.from(row.querySelectorAll(".ag-cell"));
-    if (cells.length === 0) return;
-    const parts = cells.map(c => (c.innerText || c.textContent || "").trim()).filter(Boolean);
-    const line = parts.join(" | ").trim();
-    if (line) out.add(line);
+document.querySelectorAll(".ag-root-wrapper, .ag-root").forEach(ag => {
+    const headers = Array.from(ag.querySelectorAll(".ag-header-cell-text")).map(text);
+    const rows = [];
+    ag.querySelectorAll(".ag-row").forEach(row => {
+        const cells = Array.from(row.querySelectorAll(".ag-cell")).map(text);
+        if (cells.length && cells.some(Boolean)) rows.push(cells);
+    });
+    if (rows.length) tables.push({headers: headers, rows: rows});
 });
 
-return Array.from(out);
+return tables;
 """
+
+# Header words that identify each column (matched as substrings, lowercased)
+PLACE_HEADERS = ('pos', 'place', 'rank', 'finish', 'overall', 'result')
+SKIPPER_HEADERS = ('skipper', 'helm', 'sailor', 'name', 'owner', 'competitor', 'entrant', 'driver')
+SKIPPER_HEADER_EXCLUDE = ('boat', 'sail', 'club', 'team', 'yacht', 'crew', 'class', 'fleet')
+CREW_HEADERS = ('crew',)
+SAIL_HEADERS = ('sail', 'bow', 'hull')
+BOAT_HEADERS = ('boat', 'yacht')
+POINTS_HEADERS = ('points', 'pts', 'total', 'score', 'net')
+DIVISION_HEADERS = ('division', 'div')
+CLASS_HEADERS = ('class', 'fleet')
+TEAM_HEADERS = ('club', 'team', 'school')
+
+# Scoring abbreviations that replace a finishing place
+SCORING_CODES = {'dnf', 'dns', 'dsq', 'dnc', 'ocs', 'ret', 'raf', 'ufd', 'bfd',
+                 'dne', 'zfp', 'scp', 'dpi', 'nsc', 'dgm', 'dp', 'rdg', 'dnq'}
+
+_NAME_SPLIT_RE = re.compile(r'\s*(?:\n|/|&|\+|;|\band\b)\s*')
+_NON_PERSON = {'tbd', 'tba', 'n/a', 'na', 'none', '-', '--', 'unknown', 'crew', 'skipper'}
+
+
+def _find_header(headers, wanted, exclude=()):
+    for index, header in enumerate(headers):
+        lowered = (header or '').lower()
+        if any(word in lowered for word in exclude):
+            continue
+        if any(word in lowered for word in wanted):
+            return index
+    return None
+
+
+def _column_map(headers):
+    """Column indices by role, from a header row; None where not found."""
+    columns = {
+        'place': _find_header(headers, PLACE_HEADERS),
+        'skipper': _find_header(headers, SKIPPER_HEADERS, exclude=SKIPPER_HEADER_EXCLUDE),
+        'crew': _find_header(headers, CREW_HEADERS),
+        'sail': _find_header(headers, SAIL_HEADERS),
+        'boat': _find_header(headers, BOAT_HEADERS, exclude=('class', 'type')),
+        'points': _find_header(headers, POINTS_HEADERS),
+        'division': _find_header(headers, DIVISION_HEADERS),
+        'class': _find_header(headers, CLASS_HEADERS),
+        'team': _find_header(headers, TEAM_HEADERS),
+    }
+    # A header row is only trusted if it locates the two things a result
+    # needs; otherwise the positional heuristic is safer
+    if columns['place'] is None or columns['skipper'] is None:
+        return None
+    return columns
+
+
+def looks_like_person(text):
+    """A cell fragment that could be a person's name (not a number, code or blank)"""
+    stripped = (text or '').strip()
+    if len(stripped) < 3:
+        return False
+    if stripped.replace('.', '').replace(' ', '').replace('-', '').isdigit():
+        return False
+    if stripped.lower() in _NON_PERSON or stripped.lower() in SCORING_CODES:
+        return False
+    return True
+
+
+def split_names(text):
+    """
+    The people in one cell: 'Jane Doe\nJim Roe', 'Jane Doe / Jim Roe',
+    'Jane Doe & Jim Roe'. A single 'Last, First' is one person, reordered.
+    """
+    text = (text or '').strip()
+    if not text:
+        return []
+    parts = [p.strip() for p in _NAME_SPLIT_RE.split(text) if p.strip()]
+    names = []
+    for part in parts:
+        if ',' in part:
+            pieces = [p.strip() for p in part.split(',') if p.strip()]
+            if len(pieces) == 2 and ' ' not in pieces[0] and ' ' not in pieces[1]:
+                names.append(f"{pieces[1]} {pieces[0]}")   # Last, First -> First Last
+                continue
+            names.extend(pieces)
+        else:
+            names.append(part)
+    return [n for n in names if looks_like_person(n)]
 
 
 def extract_placement(text):
-    """Numeric placement from text like '3', '3rd', '12.'"""
-    text = text.replace('st', '').replace('nd', '').replace('rd', '').replace('th', '')
-    match = re.search(r'(\d+)', text)
+    """Numeric placement from text like '3', '3rd', '12.'; None for codes/blank"""
+    if not text:
+        return None
+    if text.strip().lower() in SCORING_CODES:
+        return None
+    cleaned = text.replace('st', '').replace('nd', '').replace('rd', '').replace('th', '')
+    match = re.search(r'(\d+)', cleaned)
     return int(match.group(1)) if match else None
+
+
+def scoring_code(text):
+    lowered = (text or '').strip().lower()
+    return lowered.upper() if lowered in SCORING_CODES else None
+
+
+def _points(text):
+    try:
+        return float((text or '').strip())
+    except ValueError:
+        return None
+
+
+def _people_results(cells, place_text, skipper_text, crew_text, extras):
+    """One result dict per person on the boat, skipper first."""
+    placement = extract_placement(place_text)
+    code = scoring_code(place_text)
+    if placement is None and code is None:
+        return []
+    skippers = split_names(skipper_text)
+    crew = split_names(crew_text) if crew_text else []
+    if not crew and len(skippers) > 1:
+        # No crew column: the skipper cell carries everyone, skipper first
+        skippers, crew = skippers[:1], skippers[1:]
+    if not skippers and not crew:
+        return []
+    everyone = skippers[:1] + crew
+    raw = ' | '.join(c for c in cells)
+    results = []
+    for index, name in enumerate(everyone):
+        role = 'skipper' if index == 0 and skippers else 'crew'
+        partners = [n for n in everyone if n != name]
+        results.append(dict(extras,
+                            placement=placement,
+                            scoring_code=code,
+                            sailor_name=name,
+                            role=role,
+                            crew_partner=', '.join(partners) or None,
+                            raw_row_data=raw))
+    return results
+
+
+def _parse_by_headers(cells, columns):
+    def cell(key):
+        index = columns.get(key)
+        return cells[index] if index is not None and index < len(cells) else ''
+
+    extras = {
+        'points_scored': _points(cell('points')) if columns.get('points') is not None else None,
+        'division': cell('division').strip() or None,
+        'boat_type': cell('class').strip() or None,
+        'team_name': cell('team').strip() or None,
+        'sail_number': cell('sail').strip() or None,
+        'boat_name': cell('boat').strip() or None,
+    }
+    return _people_results(cells, cell('place'), cell('skipper'), cell('crew'), extras)
+
+
+def _parse_by_position(cells):
+    """
+    No usable header row: the first cell is the place, the first following
+    cell that reads like a name holds the people, and points are the last
+    numeric cell. The historical heuristic, now returning everyone aboard.
+    """
+    parts = [c.strip() for c in cells if c and c.strip()]
+    if len(parts) < 2:
+        return []
+    place_text = parts[0]
+    if extract_placement(place_text) is None and scoring_code(place_text) is None:
+        return []
+    name_text = None
+    for part in parts[1:5]:
+        if looks_like_person(part.split('\n')[0]):
+            name_text = part
+            break
+    if not name_text:
+        return []
+    points = None
+    for part in reversed(parts[-3:]):
+        value = _points(part)
+        if value is not None:
+            points = value
+            break
+    extras = {'points_scored': points, 'division': None, 'boat_type': None,
+              'team_name': None, 'sail_number': None, 'boat_name': None}
+    return _people_results(parts, place_text, name_text, '', extras)
+
+
+def parse_results_tables(tables):
+    """
+    Harvested tables -> one result dict per person per boat, skipper first:
+    {placement, scoring_code, sailor_name, role, crew_partner, points_scored,
+     division, boat_type, team_name, sail_number, boat_name, raw_row_data}.
+
+    Columns are mapped by header when the table has one that names a place
+    and a skipper column; otherwise the positional heuristic is used.
+    Identical rows (the same boat rendered twice) are parsed once.
+    """
+    results = []
+    seen = set()
+    for table in tables or []:
+        headers = [h or '' for h in (table.get('headers') or [])]
+        columns = _column_map(headers) if headers else None
+        for cells in table.get('rows') or []:
+            cells = [c if c is not None else '' for c in cells]
+            key = tuple(cells)
+            if key in seen:
+                continue
+            seen.add(key)
+            parsed = _parse_by_headers(cells, columns) if columns else _parse_by_position(cells)
+            results.extend(parsed)
+    return results
 
 
 def parse_result_row(row_text):
     """
-    Interpret one pipe-separated results row, e.g. "1 | 12345 | John Doe | 15.0".
-
-    Returns {'placement', 'sailor_name', 'raw_row_data', 'points_scored'?}
-    or None when the row is not a result (header rows, blank rows).
+    Interpret one pipe-separated results row, e.g. "1 | 12345 | John Doe | 15.0",
+    returning the SKIPPER's result only (compatibility shim over the
+    positional parser). None when the row is not a result.
     """
-    parts = [p.strip() for p in row_text.split('|')]
-    if len(parts) < 2:
-        return None
+    people = _parse_by_position([p.strip() for p in row_text.split('|')])
+    return people[0] if people else None
 
-    placement = extract_placement(parts[0])
-    if not placement:
-        return None
 
-    # Sailor name: first non-numeric column after the placement
-    sailor_name = None
-    for part in parts[1:5]:
-        if part and len(part) > 2 and not part.replace('.', '').isdigit():
-            sailor_name = part.split('\n')[0].strip()
-            break
-    if not sailor_name:
-        return None
+def count_boats(results):
+    """Boats per division (one boat per raw row), for fleet sizes"""
+    boats = {}
+    for result in results:
+        boats.setdefault(result.get('division'), set()).add(result.get('raw_row_data'))
+    return {division: len(rows) for division, rows in boats.items()}
 
-    result = {
-        'placement': placement,
-        'sailor_name': sailor_name,
-        'raw_row_data': row_text,
-    }
 
-    # Points usually sit in the last column
-    for part in reversed(parts[-3:]):
-        try:
-            result['points_scored'] = float(part)
-            break
-        except ValueError:
-            continue
-
-    return result
+def attach_fleet_sizes(results):
+    """Set fleet_size on every result from the boat count of its division"""
+    sizes = count_boats(results)
+    for result in results:
+        result['fleet_size'] = sizes.get(result.get('division'))
+    return results

@@ -24,7 +24,7 @@ from datetime import date, datetime, timedelta, timezone
 from models import db, ClubspotRegattaCheck, Regatta, Result, ScraperState
 from clubspot_common import (ParseClient, RateLimitExhausted, fetch_window,
                              iter_quarters_desc, measure_filters, parse_parse_date,
-                             sitemap_regatta_ids)
+                             regatta_status, sitemap_regatta_ids)
 
 # State keys (scraper_state table)
 KEY_NEWEST = 'clubspot_enum_newest'              # upper bound of the enumerated range
@@ -361,35 +361,63 @@ def sync_results_into_catalog():
     return updated
 
 
-def select_due(now=None, recheck_window_days=30, recheck_interval_days=2,
-               start_year=None, limit=None):
-    """
-    Catalogue rows the scraper should visit this run, newest first:
-    finished regattas (no end date -> started counts as finished) that were
-    never visited, plus visited-but-empty ones still inside the re-check
-    window and not checked within the interval. Rows without dates
-    (sitemap-only) come last so their metadata is fetched when reached.
+def in_progress_max_days():
+    return int(os.environ.get('SCRAPER_IN_PROGRESS_MAX_DAYS', '120'))
 
-    Returns (due_rows, counts) where counts describes the whole catalogue.
+
+def select_due(now=None, recheck_window_days=30, recheck_interval_days=2,
+               start_year=None, limit=None, in_progress_interval_days=1):
+    """
+    Catalogue rows the scraper should visit this run, newest first.
+
+      upcoming     -- skipped.
+      in progress  -- a series or multi-day event posting standings as it
+                      goes: visited every in_progress_interval_days whether
+                      or not it already has results.
+      final        -- visited once if never visited; visited again if its
+                      results were last read before it ended (they were
+                      provisional); visited-but-empty ones are re-tried
+                      inside the re-check window, not more often than the
+                      interval.
+
+    Rows without dates (sitemap-only) come last so their metadata is fetched
+    when reached. Returns (due_rows, counts) where counts describes the
+    whole catalogue.
     """
     now = now or datetime.utcnow()
     today = now.date()
     due_before = now - timedelta(days=recheck_interval_days)
+    in_progress_before = now - timedelta(days=in_progress_interval_days)
+    max_days = in_progress_max_days()
     rows = ClubspotRegattaCheck.query.all()
 
     with_results = 0
+    in_progress = 0
+    refresh = 0
     due = []
     for check in rows:
-        if check.result_count and check.result_count > 0:
+        has_results = bool(check.result_count and check.result_count > 0)
+        if has_results:
             with_results += 1
-            continue
         if start_year and check.start_date and check.start_date.year < start_year:
             continue
+        status = regatta_status(check.start_date, check.end_date, today, max_days)
+        if status == 'upcoming':
+            continue
+        if status == 'in_progress':
+            in_progress += 1
+            if check.last_checked_at is None or check.last_checked_at <= in_progress_before:
+                due.append(check)
+            continue
         ended = check.end_date or check.start_date
-        if ended and ended > today:
-            continue  # upcoming or still running
         if check.last_checked_at is None:
             due.append(check)
+            continue
+        if has_results:
+            # Read while the regatta was still running: standings were provisional
+            if ended and check.last_checked_at.date() < ended and check.last_checked_at <= due_before:
+                refresh += 1
+                due.append(check)
             continue
         if ended and (today - ended).days > recheck_window_days:
             continue
@@ -400,5 +428,6 @@ def select_due(now=None, recheck_window_days=30, recheck_interval_days=2,
     due.sort(key=lambda c: (c.start_date is None, -(c.start_date.toordinal() if c.start_date else 0)))
     if limit:
         due = due[:limit]
-    counts = {'catalog': len(rows), 'with_results': with_results, 'due': len(due)}
+    counts = {'catalog': len(rows), 'with_results': with_results, 'due': len(due),
+              'in_progress': in_progress, 'refresh_final': refresh}
     return due, counts
