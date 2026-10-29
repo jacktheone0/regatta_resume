@@ -39,14 +39,14 @@
         </div>
         <div class="col-md-3 col-6 mb-3">
             <div class="stat-box highlight">
-                <div class="stat-value">{{ stats.best_finish or 'N/A' }}</div>
+                <div class="stat-value">{{ stats.best_finish_text or 'N/A' }}</div>
                 <div class="stat-label">Best Finish</div>
             </div>
         </div>
         <div class="col-md-3 col-6 mb-3">
-            <div class="stat-box">
-                <div class="stat-value">{{ stats.average_placement or 'N/A' }}</div>
-                <div class="stat-label">Avg Placement</div>
+            <div class="stat-box" title="Average place scaled to a 100-boat fleet. Lower is better. Counts {{ stats.counted_results }} results from fleets of {{ stats.min_fleet }}+ boats.">
+                <div class="stat-value">{{ stats.avg_standardized if stats.avg_standardized is not none else 'N/A' }}</div>
+                <div class="stat-label">Avg Finish per 100 Boats</div>
             </div>
         </div>
         <div class="col-md-3 col-6 mb-3">
@@ -76,7 +76,25 @@
                         <div class="col-md-3 mb-2">
                             <strong>Total:</strong> {{ stats.total_regattas }} regattas
                         </div>
+                        {% if stats.avg_percentile is not none %}
+                        <div class="col-md-3 mb-2">
+                            <strong>Avg Fleet Beaten:</strong> {{ stats.avg_percentile }}%
+                        </div>
+                        {% endif %}
+                        {% if stats.best_standardized_text %}
+                        <div class="col-md-3 mb-2">
+                            <strong>Best vs Fleet:</strong> {{ stats.best_standardized_text }}
+                        </div>
+                        {% endif %}
                     </div>
+                    {% if stats.counted_results < stats.total_regattas %}
+                    <p class="text-muted small mb-0 mt-2">
+                        Normalized stats use {{ stats.counted_results }} of {{ stats.total_regattas }} results
+                        {%- if stats.excluded.no_finish %}; {{ stats.excluded.no_finish }} without a numeric place{% endif %}
+                        {%- if stats.excluded.no_fleet_size %}; {{ stats.excluded.no_fleet_size }} without a known fleet size{% endif %}
+                        {%- if stats.excluded.small_fleet %}; {{ stats.excluded.small_fleet }} from fleets under {{ stats.min_fleet }} boats{% endif %}.
+                    </p>
+                    {% endif %}
                 </div>
             </div>
         </div>

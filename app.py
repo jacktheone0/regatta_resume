@@ -6,6 +6,7 @@ from config import config
 from models import db, User, Sailor, Regatta, Result, ResumeLink, SailorName, HSResult, CollegeResult, ScraperLogEntry
 from forms import LoginForm, RegisterForm, ClaimProfileForm
 from utils import generate_pdf, calculate_stats, get_performance_trends
+import stats as sailing_stats
 import click
 import os
 import json
@@ -261,38 +262,8 @@ def sailor_name_profile(sailor_name_id):
         sailor_name_id=sailor_name_id
     ).order_by(desc(CollegeResult.regatta_date)).all()
 
-    # Calculate basic stats
-    total_results = len(hs_results) + len(college_results)
-
-    best_finish = None
-    if hs_results or college_results:
-        all_placements = [r.place_numeric for r in hs_results if r.place_numeric] + \
-                        [r.place_numeric for r in college_results if r.place_numeric]
-        if all_placements:
-            best_finish = min(all_placements)
-
-    avg_placement = None
-    if hs_results or college_results:
-        all_placements = [r.place_numeric for r in hs_results if r.place_numeric] + \
-                        [r.place_numeric for r in college_results if r.place_numeric]
-        if all_placements:
-            avg_placement = round(sum(all_placements) / len(all_placements), 1)
-
-    top_3_count = len([r for r in hs_results if r.place_numeric and r.place_numeric <= 3]) + \
-                  len([r for r in college_results if r.place_numeric and r.place_numeric <= 3])
-
-    top_10_count = len([r for r in hs_results if r.place_numeric and r.place_numeric <= 10]) + \
-                   len([r for r in college_results if r.place_numeric and r.place_numeric <= 10])
-
-    stats = {
-        'total_regattas': total_results,
-        'best_finish': best_finish,
-        'average_placement': avg_placement,
-        'top_3_count': top_3_count,
-        'top_10_count': top_10_count,
-        'hs_count': len(hs_results),
-        'college_count': len(college_results)
-    }
+    # Same normalized statistics as ClubSpot profiles (place per 100 boats)
+    stats = sailing_stats.summarize(sailing_stats.entries_for_sailor_name(sailor_name))
 
     # Check if user owns this (if they have claimed it)
     is_owner = current_user.is_authenticated and sailor_name.user_id == current_user.id
@@ -369,18 +340,13 @@ def coach_view(sailor_id):
     recent_results = recent_query.order_by(desc(Regatta.start_date)).all()
     historical_results = historical_query.order_by(desc(Regatta.start_date)).all()
 
-    # Calculate performance trends
-    trends = get_performance_trends(sailor_id, months_back, boat_type=boat_filter)
-
-    # Get fleet breakdown (always across all classes, for comparison)
-    fleet_stats = db.session.query(
-        Result.boat_type,
-        func.count(Result.id).label('count'),
-        func.avg(Result.placement).label('avg_placement')
-    ).filter(
-        Result.sailor_id == sailor_id,
-        Result.boat_type.isnot(None)
-    ).group_by(Result.boat_type).all()
+    # Performance trends and breakdowns on standardized finish (per 100 boats),
+    # across ClubSpot plus HS/College results under the same name
+    entries = sailing_stats.entries_for_sailor(sailor)
+    trends = sailing_stats.trends(entries, months_back=months_back, boat_type=boat_filter)
+    fleet_stats = sailing_stats.breakdown(entries, 'boat_type')
+    source_stats = sailing_stats.breakdown(entries, 'source')
+    summary = sailing_stats.summarize(entries)
 
     return render_template('coach_view.html',
                          sailor=sailor,
@@ -388,6 +354,8 @@ def coach_view(sailor_id):
                          historical_results=historical_results,
                          trends=trends,
                          fleet_stats=fleet_stats,
+                         source_stats=source_stats,
+                         summary=summary,
                          months_back=months_back,
                          boat_types=boat_types,
                          boat_filter=boat_filter)
@@ -638,14 +606,22 @@ def api_sailor_results(sailor_id):
     data = [{
         'id': r.Result.id,
         'placement': r.Result.placement,
+        'scoring_code': r.Result.scoring_code,
+        'fleet_size': r.Result.fleet_size,
+        'place_text': r.Result.place_text,
+        'standardized': sailing_stats.standardized_finish(r.Result.placement, r.Result.fleet_size),
+        'division': r.Result.division,
         'boat_type': r.Result.boat_type,
         'role': r.Result.role,
+        'crew_partner': r.Result.crew_partner,
         'points': r.Result.points_scored,
         'regatta': {
             'name': r.Regatta.name,
             'location': r.Regatta.location,
             'date': r.Regatta.start_date.isoformat(),
-            'fleet': r.Regatta.fleet_type
+            'fleet': r.Regatta.fleet_type,
+            'status': r.Regatta.status,
+            'results_as_of': r.Regatta.results_as_of.isoformat() if r.Regatta.results_as_of else None,
         }
     } for r in results]
 
@@ -1023,6 +999,27 @@ def import_regatta_ids(path, source):
                 ids.add(match.group(1))
     added = catalog.upsert_ids(ids, source=source)
     print(f"{len(ids)} IDs read from {path}; {added} new rows added to the catalogue")
+
+
+@app.cli.command('reparse-results')
+@click.option('--dry-run', is_flag=True, help='Report what would change without writing')
+@click.option('--requeue-missing', is_flag=True,
+              help='Mark regattas whose rows have no raw text as unchecked so the scraper re-visits them')
+@click.option('--regatta-id', type=int, default=None, help='Only this regatta (database id)')
+def reparse_results(dry_run, requeue_missing, regatta_id):
+    """
+    Re-derive crew rows, scoring codes and fleet sizes for stored ClubSpot
+    results from the raw row text saved with each result. Rows saved before
+    raw text was kept cannot be re-parsed; --requeue-missing sends those
+    regattas back to the scraper.
+    """
+    from reparse import reparse_all
+    report = reparse_all(dry_run=dry_run, requeue_missing=requeue_missing, regatta_id=regatta_id)
+    mode = 'DRY RUN' if dry_run else 'APPLIED'
+    print(f"[{mode}] regattas={report['regattas']} rows_seen={report['rows']} "
+          f"fleet_sizes_set={report['fleet_sizes']} scoring_codes_set={report['scoring_codes']} "
+          f"crew_rows_added={report['crew_added']} no_raw_text={report['missing_raw']} "
+          f"requeued={report['requeued']}")
 
 
 # ============================================================================

@@ -35,8 +35,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 # server scraper runs: clubspot_common.py at the repository root. Not a
 # copy -- so what this GUI proves holds for the server, and vice versa.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from clubspot_common import (HARVEST_JS, fetch_regattas, fetch_regatta_by_id,  # noqa: E402
-                             parse_parse_date, parse_result_row, split_by_completion)
+from clubspot_common import (HARVEST_JS, attach_fleet_sizes, fetch_regattas,  # noqa: E402
+                             fetch_regatta_by_id, parse_parse_date,
+                             parse_results_tables, split_by_completion)
 
 
 def extract_regatta_id(text):
@@ -87,9 +88,26 @@ def scrape_regatta_results(driver, regatta_id, timeout=12):
         driver.execute_script("window.scrollBy(0, Math.max(600, window.innerHeight));")
         time.sleep(0.2)
 
-    rows_text = driver.execute_script(HARVEST_JS) or []
-    results = [r for r in (parse_result_row(t) for t in rows_text) if r]
+    # Same harvest + parse the server runs: one row per PERSON (skipper and
+    # crew), with the boat count of the division as fleet size
+    tables = driver.execute_script(HARVEST_JS) or []
+    results = attach_fleet_sizes(parse_results_tables(tables))
     return results, url
+
+
+def result_row(regatta_name, r):
+    """One table/CSV row per person: place shown as 'N of fleet' or the scoring code"""
+    place = r.get('placement')
+    fleet = r.get('fleet_size')
+    place_text = r.get('scoring_code') or (f"{place} of {fleet}" if place and fleet else str(place))
+    return (regatta_name, r['sailor_name'], r.get('role') or 'skipper', place_text,
+            r.get('division') or '', r.get('points_scored'), r.get('raw_row_data'))
+
+
+def describe(results):
+    boats = len({r.get('raw_row_data') for r in results})
+    crew = sum(1 for r in results if r.get('role') == 'crew')
+    return f"{boats} boats, {len(results)} people ({crew} crew)"
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +123,7 @@ class ScraperGUI(tk.Tk):
         self.msg_queue = queue.Queue()
         self.stop_event = threading.Event()
         self.worker = None
-        self.scraped_rows = []  # (regatta, sailor, placement, points, raw)
+        self.scraped_rows = []  # (regatta, sailor, role, place, division, points, raw)
 
         self._build_widgets()
         self.after(100, self._drain_queue)
@@ -167,9 +185,9 @@ class ScraperGUI(tk.Tk):
         panes.add(log_frame, weight=1)
 
         table_frame = ttk.LabelFrame(panes, text="Scraped results")
-        columns = ('regatta', 'sailor', 'placement', 'points')
+        columns = ('regatta', 'sailor', 'role', 'place', 'division', 'points')
         self.tree = ttk.Treeview(table_frame, columns=columns, show='headings')
-        for col, width in zip(columns, (340, 260, 90, 90)):
+        for col, width in zip(columns, (300, 220, 70, 90, 120, 70)):
             self.tree.heading(col, text=col.title())
             self.tree.column(col, width=width, anchor='w')
         scroll = ttk.Scrollbar(table_frame, orient='vertical', command=self.tree.yview)
@@ -192,7 +210,7 @@ class ScraperGUI(tk.Tk):
                 elif kind == 'status':
                     self.status_var.set(payload)
                 elif kind == 'row':
-                    self.tree.insert('', 'end', values=payload[:4])
+                    self.tree.insert('', 'end', values=payload[:6])
                 elif kind == 'done':
                     self.run_btn.configure(state='normal')
                     self.test_btn.configure(state='normal')
@@ -321,11 +339,11 @@ class ScraperGUI(tk.Tk):
                         self.log(f"  No results rows found at {url} "
                                  f"(regatta may have no posted results)")
                     for r in results:
-                        row = (name, r['sailor_name'], r['placement'], r.get('points_scored'), r['raw_row_data'])
+                        row = result_row(name, r)
                         self.scraped_rows.append(row)
                         self.msg_queue.put(('row', row))
                     found_total += len(results)
-                    self.log(f"  -> {len(results)} results parsed")
+                    self.log(f"  -> {describe(results)}")
                     time.sleep(1)
 
                 self.log(f"DONE. {found_total} results from this run.")
@@ -379,10 +397,10 @@ class ScraperGUI(tk.Tk):
                 if not results:
                     self.log(f"No results rows found at {url}")
                 for r in results:
-                    row = (name, r['sailor_name'], r['placement'], r.get('points_scored'), r['raw_row_data'])
+                    row = result_row(name, r)
                     self.scraped_rows.append(row)
                     self.msg_queue.put(('row', row))
-                self.log(f"DONE. {len(results)} results parsed from {name}.")
+                self.log(f"DONE. {describe(results)} from {name}.")
                 self.set_status(
                     f"'{name}': {len(results)} results -- "
                     + ("SCRAPER WORKS." if results else "nothing parsed, see log.")
@@ -410,7 +428,7 @@ class ScraperGUI(tk.Tk):
             return
         with open(path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['regatta', 'sailor', 'placement', 'points', 'raw_row'])
+            writer.writerow(['regatta', 'sailor', 'role', 'place', 'division', 'points', 'raw_row'])
             writer.writerows(self.scraped_rows)
         self.log(f"Exported {len(self.scraped_rows)} rows to {path}")
 

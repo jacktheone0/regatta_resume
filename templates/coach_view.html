@@ -50,22 +50,28 @@
         </div>
     </div>
 
-    <!-- Performance Comparison Cards -->
+    <!-- Performance Comparison Cards (standardized finish: place per 100 boats) -->
+    <p class="text-muted small">
+        All figures are the <strong>finish per 100 boats</strong>: a place scaled to a 100-boat fleet, so
+        3rd of 6 (50.0) and 15th of 30 (50.0) compare directly. Lower is better. Results from fleets under
+        {{ summary.min_fleet }} boats, without a fleet size, without a finish (DNF, DNS...) or from regattas
+        still in progress are left out.
+    </p>
     <div class="row mb-4">
         <div class="col-md-3">
             <div class="stat-card">
                 <div class="stat-label">Recent Avg</div>
                 <div class="stat-value {% if trends.improvement and trends.improvement > 0 %}text-success{% elif trends.improvement and trends.improvement < 0 %}text-danger{% endif %}">
-                    {{ trends.recent_avg or 'N/A' }}
+                    {{ trends.recent_avg if trends.recent_avg is not none else 'N/A' }}
                 </div>
-                <small class="text-muted">Last {{ months_back }} months</small>
+                <small class="text-muted">per 100 boats, last {{ months_back }} months ({{ trends.recent_count }} results)</small>
             </div>
         </div>
         <div class="col-md-3">
             <div class="stat-card">
                 <div class="stat-label">Historical Avg</div>
-                <div class="stat-value">{{ trends.historical_avg or 'N/A' }}</div>
-                <small class="text-muted">Before recent period</small>
+                <div class="stat-value">{{ trends.historical_avg if trends.historical_avg is not none else 'N/A' }}</div>
+                <small class="text-muted">per 100 boats, before recent period ({{ trends.historical_count }} results)</small>
             </div>
         </div>
         <div class="col-md-3">
@@ -79,17 +85,26 @@
                         N/A
                     {% endif %}
                 </div>
-                <small class="text-muted">Lower is better</small>
+                <small class="text-muted">Positive = moved up the fleet</small>
             </div>
         </div>
         <div class="col-md-3">
             <div class="stat-card">
                 <div class="stat-label">Consistency</div>
-                <div class="stat-value">{{ trends.consistency or 'N/A' }}</div>
-                <small class="text-muted">Std deviation</small>
+                <div class="stat-value">{{ trends.consistency if trends.consistency is not none else 'N/A' }}</div>
+                <small class="text-muted">Std deviation of recent finishes per 100 boats</small>
             </div>
         </div>
     </div>
+    {% if trends.excluded %}
+    <p class="text-muted small">
+        Left out of the comparison:
+        {% if trends.excluded.in_progress %}{{ trends.excluded.in_progress }} in progress; {% endif %}
+        {% if trends.excluded.no_finish %}{{ trends.excluded.no_finish }} without a finish; {% endif %}
+        {% if trends.excluded.no_fleet_size %}{{ trends.excluded.no_fleet_size }} without a fleet size; {% endif %}
+        {% if trends.excluded.small_fleet %}{{ trends.excluded.small_fleet }} from fleets under {{ summary.min_fleet }} boats; {% endif %}
+    </p>
+    {% endif %}
 
     <!-- Performance Chart -->
     <div class="card mb-4">
@@ -105,24 +120,65 @@
     {% if fleet_stats %}
     <div class="card mb-4">
         <div class="card-header">
-            <h5 class="mb-0">Fleet Performance</h5>
+            <h5 class="mb-0">By Boat Class</h5>
         </div>
         <div class="card-body">
             <div class="table-responsive">
                 <table class="table">
                     <thead>
                         <tr>
-                            <th>Fleet</th>
-                            <th>Races</th>
-                            <th>Avg Placement</th>
+                            <th>Class</th>
+                            <th>Results</th>
+                            <th>Counted</th>
+                            <th>Avg per 100 Boats</th>
+                            <th>Best per 100 Boats</th>
+                            <th>Avg Raw Place</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for fleet in fleet_stats %}
                         <tr>
-                            <td><strong>{{ fleet.boat_type }}</strong></td>
+                            <td><strong>{{ fleet.name }}</strong></td>
                             <td>{{ fleet.count }}</td>
-                            <td>{{ '%.1f'|format(fleet.avg_placement) }}</td>
+                            <td>{{ fleet.counted }}</td>
+                            <td>{{ fleet.avg_standardized if fleet.avg_standardized is not none else 'N/A' }}</td>
+                            <td>{{ fleet.best_standardized if fleet.best_standardized is not none else 'N/A' }}</td>
+                            <td>{{ fleet.avg_place if fleet.avg_place is not none else 'N/A' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Source Breakdown -->
+    {% if source_stats %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">By Source</h5>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Source</th>
+                            <th>Results</th>
+                            <th>Counted</th>
+                            <th>Avg per 100 Boats</th>
+                            <th>Best per 100 Boats</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for source in source_stats %}
+                        <tr>
+                            <td><strong>{{ {'clubspot': 'ClubSpot', 'hs': 'High School', 'college': 'College'}.get(source.name, source.name) }}</strong></td>
+                            <td>{{ source.count }}</td>
+                            <td>{{ source.counted }}</td>
+                            <td>{{ source.avg_standardized if source.avg_standardized is not none else 'N/A' }}</td>
+                            <td>{{ source.best_standardized if source.best_standardized is not none else 'N/A' }}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -146,7 +202,8 @@
                                 {% for result, regatta in recent_results %}
                                 <tr>
                                     <td>
-                                        <span class="badge bg-primary">#{{ result.placement }}</span>
+                                        <span class="badge bg-primary">{{ result.place_text }}</span>
+                                        {% if regatta.status == 'in_progress' %}<span class="badge bg-warning text-dark">In progress</span>{% endif %}
                                     </td>
                                     <td>
                                         <strong>{{ regatta.name }}</strong><br>
@@ -175,7 +232,7 @@
                                 {% for result, regatta in historical_results[:20] %}
                                 <tr>
                                     <td>
-                                        <span class="badge bg-primary">#{{ result.placement }}</span>
+                                        <span class="badge bg-primary">{{ result.place_text }}</span>
                                     </td>
                                     <td>
                                         <strong>{{ regatta.name }}</strong><br>
@@ -236,8 +293,8 @@ new Chart(ctx, {
     data: {
         labels: chartData.map(d => d.date),
         datasets: [{
-            label: 'Placement',
-            data: chartData.map(d => d.placement),
+            label: 'Finish per 100 boats',
+            data: chartData.map(d => d.standardized),
             borderColor: '#0066cc',
             backgroundColor: 'rgba(0, 102, 204, 0.1)',
             tension: 0.3,
@@ -249,11 +306,12 @@ new Chart(ctx, {
         maintainAspectRatio: true,
         scales: {
             y: {
-                reverse: true,  // Lower placements at top
-                beginAtZero: false,
+                reverse: true,  // Better finishes at top
+                min: 0,
+                max: 100,
                 title: {
                     display: true,
-                    text: 'Placement (lower is better)'
+                    text: 'Finish per 100 boats (lower is better)'
                 }
             },
             x: {
@@ -271,7 +329,8 @@ new Chart(ctx, {
                         return chartData[index].regatta;
                     },
                     label: function(context) {
-                        return 'Placement: #' + context.parsed.y;
+                        const d = chartData[context.dataIndex];
+                        return d.placement + ' of ' + d.fleet + ' (' + d.standardized + ' per 100 boats)';
                     }
                 }
             },

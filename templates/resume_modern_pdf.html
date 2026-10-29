@@ -120,8 +120,8 @@
         <div class="result-item">
             <div class="result-header">
                 <div class="result-name">{{ regatta.name }}</div>
-                <div class="placement {% if result.placement <= 3 %}podium{% endif %}">
-                    #{{ result.placement }}
+                <div class="placement {% if result.placement and result.placement <= 3 %}podium{% endif %}">
+                    {% if result.placement %}#{{ result.placement }}{% else %}{{ result.place_text }}{% endif %}
                 </div>
             </div>
             <div class="result-details">

@@ -93,6 +93,11 @@ class Regatta(db.Model):
     source_url = db.Column(db.String(500))  # URL on theclubspot.com
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+    # 'upcoming' | 'in_progress' | 'final'. A series posts standings week by
+    # week; while in progress its results are provisional and re-scraped.
+    status = db.Column(db.String(20), default='final')
+    results_as_of = db.Column(db.DateTime)  # when the stored results were last refreshed
+
     # Relationships
     results = db.relationship('Result', back_populates='regatta', cascade='all, delete-orphan')
 
@@ -109,7 +114,9 @@ class Result(db.Model):
     regatta_id = db.Column(db.Integer, db.ForeignKey('regattas.id'), nullable=False, index=True)
 
     # Result details
-    placement = db.Column(db.Integer, nullable=False)  # PRIMARY data point
+    placement = db.Column(db.Integer)  # PRIMARY data point; NULL when scoring_code is set
+    scoring_code = db.Column(db.String(10))  # 'DNF', 'DNS', 'DSQ', ... instead of a place
+    fleet_size = db.Column(db.Integer)  # boats in this division; what the place is out of
     boat_type = db.Column(db.String(100))  # SECONDARY (e.g., "420", "Laser")
     role = db.Column(db.String(20))  # TERTIARY: 'skipper' or 'crew'
     points_scored = db.Column(db.Float)  # QUATERNARY
@@ -128,13 +135,24 @@ class Result(db.Model):
     sailor = db.relationship('Sailor', back_populates='results')
     regatta = db.relationship('Regatta', back_populates='results')
 
-    # Unique constraint: one sailor can't have multiple results for same regatta+division
+    # One row per person per boat: a sailor can appear once per
+    # regatta+division+role (skipper in A, crew in B)
     __table_args__ = (
         db.Index('idx_sailor_regatta', 'sailor_id', 'regatta_id'),
+        db.Index('idx_result_identity', 'sailor_id', 'regatta_id', 'division', 'role'),
     )
 
+    @property
+    def place_text(self):
+        """'3 of 18', 'DNF', or just the place"""
+        if self.scoring_code:
+            return self.scoring_code
+        if self.placement is None:
+            return 'N/A'
+        return f"{self.placement} of {self.fleet_size}" if self.fleet_size else str(self.placement)
+
     def __repr__(self):
-        return f'<Result {self.sailor.name} - {self.regatta.name}: {self.placement}>'
+        return f'<Result {self.sailor.name} - {self.regatta.name}: {self.place_text}>'
 
 
 class SailorName(db.Model):

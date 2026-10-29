@@ -77,7 +77,7 @@
                                 type="checkbox"
                                 value="{{ result.id }}"
                                 id="result{{ result.id }}"
-                                data-placement="{{ result.placement }}"
+                                data-placement="{{ result.placement or 999 }}"
                                 checked
                             >
                             <label class="form-check-label" for="result{{ result.id }}">
@@ -89,7 +89,7 @@
                                             {% elif result.placement == 3 %}bg-info
                                             {% else %}bg-light text-dark
                                             {% endif %}">
-                                            #{{ result.placement }}
+                                            {% if result.placement %}#{{ result.placement }}{% else %}{{ result.place_text }}{% endif %}
                                         </span>
                                         <strong>{{ regatta.name }}</strong>
                                     </div>

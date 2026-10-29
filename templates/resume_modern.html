@@ -33,8 +33,8 @@
                 <div class="timeline">
                     {% for result, regatta in results %}
                     <div class="timeline-item">
-                        <div class="timeline-marker {% if result.placement <= 3 %}podium{% endif %}">
-                            {{ result.placement }}
+                        <div class="timeline-marker {% if result.placement and result.placement <= 3 %}podium{% endif %}">
+                            {{ result.placement or result.place_text }}
                         </div>
                         <div class="timeline-content">
                             <div class="timeline-header">

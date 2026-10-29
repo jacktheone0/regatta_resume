@@ -39,14 +39,14 @@
         </div>
         <div class="col-md-3 col-6 mb-3">
             <div class="stat-box highlight">
-                <div class="stat-value">{{ stats.best_finish or 'N/A' }}</div>
+                <div class="stat-value">{{ stats.best_finish_text or 'N/A' }}</div>
                 <div class="stat-label">Best Finish</div>
             </div>
         </div>
         <div class="col-md-3 col-6 mb-3">
-            <div class="stat-box">
-                <div class="stat-value">{{ stats.average_placement or 'N/A' }}</div>
-                <div class="stat-label">Avg Placement</div>
+            <div class="stat-box" title="Average place scaled to a 100-boat fleet. Lower is better. Counts {{ stats.counted_results }} results from fleets of {{ stats.min_fleet }}+ boats.">
+                <div class="stat-value">{{ stats.avg_standardized if stats.avg_standardized is not none else 'N/A' }}</div>
+                <div class="stat-label">Avg Finish per 100 Boats</div>
             </div>
         </div>
         <div class="col-md-3 col-6 mb-3">
@@ -56,6 +56,15 @@
             </div>
         </div>
     </div>
+    {% if stats.counted_results < stats.total_regattas %}
+    <p class="text-muted small mb-4">
+        Normalized stats use {{ stats.counted_results }} of {{ stats.total_regattas }} results
+        {%- if stats.excluded.in_progress %}; {{ stats.excluded.in_progress }} still in progress{% endif %}
+        {%- if stats.excluded.no_finish %}; {{ stats.excluded.no_finish }} without a finish (DNF, DNS...){% endif %}
+        {%- if stats.excluded.no_fleet_size %}; {{ stats.excluded.no_fleet_size }} without a known fleet size{% endif %}
+        {%- if stats.excluded.small_fleet %}; {{ stats.excluded.small_fleet }} from fleets under {{ stats.min_fleet }} boats{% endif %}.
+    </p>
+    {% endif %}
 
     <!-- Quick Facts -->
     <div class="row mb-4">
@@ -80,6 +89,21 @@
                         <div class="col-md-3 mb-2">
                             <strong>Recent Activity:</strong> {{ stats.recent_regattas }} in last 6mo
                         </div>
+                        {% if stats.avg_percentile is not none %}
+                        <div class="col-md-3 mb-2">
+                            <strong>Avg Fleet Beaten:</strong> {{ stats.avg_percentile }}%
+                        </div>
+                        {% endif %}
+                        {% if stats.best_standardized_text %}
+                        <div class="col-md-3 mb-2">
+                            <strong>Best vs Fleet:</strong> {{ stats.best_standardized_text }}
+                        </div>
+                        {% endif %}
+                        {% if stats.skipper_count or stats.crew_count %}
+                        <div class="col-md-3 mb-2">
+                            <strong>Skipper / Crew:</strong> {{ stats.skipper_count }} / {{ stats.crew_count }}
+                        </div>
+                        {% endif %}
                     </div>
                 </div>
             </div>
@@ -108,10 +132,13 @@
                         </thead>
                         <tbody>
                             {% for result, regatta in results %}
-                            <tr class="{% if result.placement <= 3 %}table-warning{% endif %}">
+                            <tr class="{% if result.placement and result.placement <= 3 and regatta.status != 'in_progress' %}table-warning{% endif %}">
                                 <td>{{ regatta.start_date.strftime('%b %d, %Y') }}</td>
                                 <td>
                                     <strong>{{ regatta.name }}</strong>
+                                    {% if regatta.status == 'in_progress' %}
+                                        <span class="badge bg-warning text-dark" title="Series still running; standings are provisional{% if regatta.results_as_of %}, last read {{ regatta.results_as_of.strftime('%b %d, %Y') }}{% endif %}">In progress</span>
+                                    {% endif %}
                                     {% if result.division %}
                                         <br><small class="text-muted">{{ result.division }}</small>
                                     {% endif %}
@@ -124,7 +151,7 @@
                                         {% elif result.placement == 3 %}bg-info
                                         {% else %}bg-light text-dark
                                         {% endif %}">
-                                        {{ result.placement }}
+                                        {{ result.place_text }}
                                     </span>
                                 </td>
                                 <td>{{ result.boat_type or regatta.fleet_type or 'N/A' }}</td>
@@ -132,7 +159,10 @@
                                     {% if result.role %}
                                         {{ result.role.capitalize() }}
                                     {% else %}
-                                        N/A
+                                        Skipper
+                                    {% endif %}
+                                    {% if result.crew_partner %}
+                                        <br><small class="text-muted">with {{ result.crew_partner }}</small>
                                     {% endif %}
                                 </td>
                                 <td>{{ result.points_scored or 'N/A' }}</td>

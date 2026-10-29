@@ -4,10 +4,12 @@ Uses Parse API to fetch all regatta IDs, then Selenium to scrape results
 """
 import requests
 from datetime import datetime, timedelta, timezone
+from sqlalchemy import or_
 from models import db, Sailor, Regatta, Result, ScraperLog, ClubspotRegattaCheck
 from scraper_logging import attach_db_log_handler
-from clubspot_common import (HARVEST_JS, extract_placement, fetch_regatta_by_id,
-                             parse_parse_date, parse_result_row)
+from clubspot_common import (HARVEST_JS, attach_fleet_sizes, extract_placement,
+                             fetch_regatta_by_id, parse_parse_date, parse_result_row,
+                             parse_results_tables, regatta_status)
 import clubspot_catalog as catalog
 import gc
 import logging
@@ -223,7 +225,8 @@ class ClubspotScraper:
             'regattas_scraped': 0,
             'regattas_empty': 0,
             'sailors_added': 0,
-            'results_added': 0
+            'results_added': 0,
+            'results_updated': 0
         }
         self.log_id = log_id  # Track which ScraperLog we're updating
 
@@ -309,10 +312,12 @@ class ClubspotScraper:
             if synced:
                 logger.info(f"Marked {synced} catalogue rows as scraped from results already stored")
 
-            # Phase 2: what is due. Regattas with results are skipped; empties
-            # are re-checked only inside the re-check window after they ended
-            # and not more often than the interval, so a run never re-visits
-            # every empty regatta in ClubSpot's history.
+            # Phase 2: what is due. Final regattas with results are skipped
+            # (unless they were read while still running); empties are
+            # re-checked only inside the re-check window after they ended and
+            # not more often than the interval; in-progress series are
+            # refreshed daily. A run never re-visits every empty regatta in
+            # ClubSpot's history.
             recheck_window_days = int(os.environ.get('SCRAPER_RECHECK_EMPTY_DAYS', '30'))
             regattas_data, catalog_counts = catalog.select_due(
                 recheck_window_days=recheck_window_days,
@@ -321,7 +326,9 @@ class ClubspotScraper:
             total_listed = catalog_counts['catalog']
             skipped = total_listed - len(regattas_data)
             logger.info(f"Catalogue: {total_listed} regattas, {catalog_counts['with_results']} "
-                        f"with results stored, {len(regattas_data)} due to scrape now")
+                        f"with results stored, {catalog_counts['in_progress']} in progress, "
+                        f"{catalog_counts['refresh_final']} final to refresh, "
+                        f"{len(regattas_data)} due to scrape now")
 
             if not regattas_data:
                 logger.info("Nothing due to scrape")
@@ -499,7 +506,11 @@ class ClubspotScraper:
             regatta = self._get_or_create_regatta(self._regatta_metadata(check, url))
 
             for result_data in results_data:
-                self._save_result(result_data, regatta.id)
+                self._save_result(result_data, regatta)
+
+            if regatta.status == 'in_progress':
+                logger.info(f"{regatta_id} is in progress (ends {regatta.end_date}); "
+                            f"standings stored as of now and refreshed next run")
 
         except Exception as e:
             logger.error(f"Error in _scrape_regatta for {regatta_id}: {e}")
@@ -539,6 +550,16 @@ class ClubspotScraper:
             check.end_date = data['end_date']
         if data['start_date'] is None:
             data['start_date'] = datetime.utcnow().date()
+
+        # Series post standings week by week: while a regatta is in progress
+        # its results are provisional and refreshed every run
+        max_days = catalog.in_progress_max_days()
+        data['status'] = regatta_status(data['start_date'], data['end_date'],
+                                        datetime.utcnow().date(), max_days)
+        if data['end_date'] and data['end_date'] > datetime.utcnow().date() and data['status'] == 'final':
+            logger.warning(f"{check.external_id}: end date {data['end_date']} is still ahead but it "
+                           f"started {(datetime.utcnow().date() - data['start_date']).days} days ago; "
+                           f"treating it as final")
         return data
 
     def _scrape_results_with_selenium(self, results_url, regatta_id, driver, timeout=12):
@@ -581,16 +602,18 @@ class ClubspotScraper:
             driver.execute_script("window.scrollBy(0, Math.max(600, window.innerHeight));")
             time.sleep(0.2)
 
-        # Extract all row data
-        rows_text = driver.execute_script(HARVEST_JS) or []
+        # Extract every table on the page and parse one result per person
+        tables = driver.execute_script(HARVEST_JS) or []
+        try:
+            results = parse_results_tables(tables)
+        except Exception as e:
+            logger.error(f"Could not parse the results tables at {results_url}: {e}")
+            results = []
+        attach_fleet_sizes(results)
 
-        # Parse each row to extract sailor name and placement
-        for row_text in rows_text:
-            result_data = self._parse_result_row(row_text)
-            if result_data:
-                results.append(result_data)
-
-        logger.info(f"Extracted {len(results)} results from {results_url}")
+        boats = len({r['raw_row_data'] for r in results})
+        crew = sum(1 for r in results if r.get('role') == 'crew')
+        logger.info(f"Extracted {boats} boats / {len(results)} people ({crew} crew) from {results_url}")
         return results
 
     def _parse_result_row(self, row_text):
@@ -609,42 +632,64 @@ class ClubspotScraper:
             logger.debug(f"Error parsing result row: {e}")
             return None
 
-    def _save_result(self, result_data, regatta_id):
-        """Save a single result to the database"""
+    def _save_result(self, result_data, regatta):
+        """
+        Save one person's result. The identity is (sailor, regatta, division,
+        role); a legacy row with no role counts as the skipper. Final
+        regattas are insert-only; in-progress ones are upserted so standings
+        follow the series. Legacy rows missing role/fleet size are completed.
+        """
         sailor_name = result_data.get('sailor_name')
         if not sailor_name:
             return
 
-        # Get or create sailor
         sailor = self._get_or_create_sailor(sailor_name)
+        role = result_data.get('role') or 'skipper'
+        division = result_data.get('division')
 
-        # Check if result already exists
-        existing = Result.query.filter_by(
-            sailor_id=sailor.id,
-            regatta_id=regatta_id
-        ).first()
+        query = Result.query.filter_by(sailor_id=sailor.id, regatta_id=regatta.id)
+        query = query.filter(Result.division == division) if division is not None \
+            else query.filter(Result.division.is_(None))
+        if role == 'skipper':
+            query = query.filter(or_(Result.role == 'skipper', Result.role.is_(None)))
+        else:
+            query = query.filter(Result.role == role)
+        existing = query.first()
+
+        fields = {
+            'placement': result_data.get('placement'),
+            'scoring_code': result_data.get('scoring_code'),
+            'fleet_size': result_data.get('fleet_size'),
+            'boat_type': result_data.get('boat_type'),
+            'role': role,
+            'points_scored': result_data.get('points_scored'),
+            'division': division,
+            'team_name': result_data.get('team_name'),
+            'crew_partner': result_data.get('crew_partner'),
+            'raw_row_data': result_data.get('raw_row_data'),
+        }
 
         if existing:
-            logger.debug(f"Result already exists: {sailor_name} at regatta {regatta_id}")
+            if regatta.status == 'in_progress':
+                changed = {k: v for k, v in fields.items() if getattr(existing, k) != v}
+            else:
+                # Final: never rewrite a stored finish, only fill what the
+                # old parser could not provide
+                changed = {k: v for k, v in fields.items()
+                           if k in ('role', 'crew_partner', 'fleet_size', 'raw_row_data', 'scoring_code')
+                           and getattr(existing, k) is None and v is not None}
+            if changed:
+                for key, value in changed.items():
+                    setattr(existing, key, value)
+                db.session.commit()
+                self.stats['results_updated'] += 1
             return
 
-        # Create new result
-        result = Result(
-            sailor_id=sailor.id,
-            regatta_id=regatta_id,
-            placement=result_data['placement'],
-            boat_type=result_data.get('boat_type'),
-            role=result_data.get('role'),
-            points_scored=result_data.get('points_scored'),
-            division=result_data.get('division'),
-            team_name=result_data.get('team_name'),
-            raw_row_data=result_data.get('raw_row_data')
-        )
-
+        result = Result(sailor_id=sailor.id, regatta_id=regatta.id, **fields)
         db.session.add(result)
         db.session.commit()
         self.stats['results_added'] += 1
-        logger.debug(f"Added result: {sailor_name} - {result_data['placement']}")
+        logger.debug(f"Added result: {sailor_name} ({role}) - {result.place_text}")
 
     def _get_or_create_sailor(self, name):
         """Get existing sailor or create new one"""
@@ -665,7 +710,7 @@ class ClubspotScraper:
         return sailor
 
     def _get_or_create_regatta(self, data):
-        """Get existing regatta or create new one"""
+        """Get existing regatta or create one; dates, status and name follow ClubSpot"""
         external_id = data.get('external_id')
 
         regatta = Regatta.query.filter_by(external_id=external_id).first()
@@ -681,9 +726,20 @@ class ClubspotScraper:
                 source_url=data.get('source_url')
             )
             db.session.add(regatta)
-            db.session.commit()
             logger.debug(f"Added new regatta: {data.get('name')}")
+        else:
+            if data.get('name'):
+                regatta.name = data['name']
+            if data.get('location'):
+                regatta.location = data['location']
+            if data.get('start_date'):
+                regatta.start_date = data['start_date']
+            if data.get('end_date'):
+                regatta.end_date = data['end_date']
 
+        regatta.status = data.get('status') or regatta.status or 'final'
+        regatta.results_as_of = datetime.utcnow()
+        db.session.commit()
         return regatta
 
     def _record_check(self, check, result_count):
