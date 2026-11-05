@@ -1,59 +1,87 @@
 {% extends "base.html" %}
 
-{% block title %}{{ sailor.name }} - Sailing Resume{% endblock %}
+{% block title %}{{ display_name }} - Sailing Resume{% endblock %}
 
 {% block content %}
 <div class="resume-classic">
     <div class="container my-5" style="max-width: 800px;">
         <!-- Header -->
         <div class="text-center mb-5 pb-4 border-bottom">
-            <h1 class="mb-2">{{ sailor.name }}</h1>
-            {% if sailor.home_club %}
-                <p class="text-muted mb-1">{{ sailor.home_club }}</p>
+            <h1 class="mb-2">{{ display_name }}</h1>
+            {% if subtitle %}
+                <p class="text-muted mb-1">{{ subtitle }}</p>
+            {% endif %}
+            {% if owner and owner.grad_year %}
+                <p class="text-muted mb-1">Class of {{ owner.grad_year }}</p>
             {% endif %}
             <p class="text-uppercase text-muted small">{{ resume_link.title }}</p>
         </div>
 
         <!-- Bio -->
-        {% if resume_link.custom_bio or sailor.bio %}
+        {% if resume_link.custom_bio or (sailor and sailor.bio) %}
         <div class="mb-5">
             <h4 class="mb-3">Profile</h4>
             <p>{{ resume_link.custom_bio or sailor.bio }}</p>
         </div>
         {% endif %}
 
+        <!-- Summary -->
+        <div class="mb-5">
+            <h4 class="mb-3">Summary</h4>
+            <p class="mb-0">
+                {{ stats.total_regattas }} regatta{{ '' if stats.total_regattas == 1 else 's' }}
+                {% if stats.best_finish %} &middot; best finish {{ stats.best_finish }}{% endif %}
+                {% if stats.top_3_count %} &middot; {{ stats.top_3_count }} podium{{ '' if stats.top_3_count == 1 else 's' }}{% endif %}
+                {% if stats.first_year and stats.last_year %}
+                    &middot; {{ stats.first_year }}&ndash;{{ stats.last_year }}
+                {% endif %}
+            </p>
+        </div>
+
         <!-- Results -->
         <div class="mb-5">
             <h4 class="mb-4">Competition Results</h4>
 
-            {% for result, regatta in results %}
+            {% for e in entries %}
             <div class="result-entry mb-4">
                 <div class="d-flex justify-content-between align-items-start mb-2">
                     <div>
-                        <h6 class="mb-1">{{ regatta.name }}</h6>
+                        <h6 class="mb-1">
+                            {% if e.link %}
+                                <a href="{{ e.link }}" target="_blank" rel="noopener">{{ e.regatta_name }}</a>
+                            {% else %}
+                                {{ e.regatta_name }}
+                            {% endif %}
+                        </h6>
                         <p class="text-muted mb-0">
-                            {{ regatta.start_date.strftime('%B %d, %Y') }}
-                            {% if regatta.location %} • {{ regatta.location }}{% endif %}
+                            {{ e.date.strftime('%B %d, %Y') if e.date else 'Date not recorded' }}
+                            {% if e.location %} &middot; {{ e.location }}{% endif %}
                         </p>
                     </div>
-                    <div class="placement-badge">
-                        {{ result.placement }}
-                    </div>
+                    <div class="placement-badge">{{ e.place_display }}</div>
                 </div>
                 <div class="result-details">
-                    {% if result.boat_type %}
-                        <span class="detail-item">Fleet: {{ result.boat_type }}</span>
+                    {% if e.boat_or_division %}
+                        <span class="detail-item">Fleet: {{ e.boat_or_division }}</span>
                     {% endif %}
-                    {% if result.role %}
-                        <span class="detail-item">Role: {{ result.role.capitalize() }}</span>
+                    {% if e.role %}
+                        <span class="detail-item">Role: {{ e.role.capitalize() }}</span>
                     {% endif %}
-                    {% if result.division %}
-                        <span class="detail-item">Division: {{ result.division }}</span>
+                    {% if e.team %}
+                        <span class="detail-item">Team: {{ e.team }}</span>
                     {% endif %}
+                    <span class="detail-item source-tag">{{ e.source_label }}</span>
                 </div>
             </div>
             {% endfor %}
         </div>
+
+        {% if stats.self_reported_count %}
+        <p class="text-muted small">
+            Results marked <em>Self-reported</em> were entered by the sailor and
+            are not sourced from published scores.
+        </p>
+        {% endif %}
 
         <!-- Footer -->
         <div class="text-center mt-5 pt-4 border-top">
@@ -94,14 +122,16 @@
 .placement-badge {
     background: #333;
     color: white;
-    width: 50px;
+    min-width: 50px;
     height: 50px;
+    padding: 0 0.5rem;
     border-radius: 4px;
     display: flex;
     align-items: center;
     justify-content: center;
     font-weight: bold;
-    font-size: 1.2rem;
+    font-size: 1rem;
+    flex-shrink: 0;
 }
 
 .result-details {
@@ -113,6 +143,13 @@
     margin-right: 1.5rem;
     color: #666;
     font-size: 0.9rem;
+}
+
+.detail-item.source-tag {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #999;
 }
 
 @media print {

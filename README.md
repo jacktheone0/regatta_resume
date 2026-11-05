@@ -142,7 +142,8 @@ RegattaResume pulls results data from **scores.hssailing.org** and **scores.coll
 regatta_resume/
 ├── app.py                  # Flask app, routes, scheduler
 ├── models.py               # SQLAlchemy models
-├── forms.py                # WTForms (login, register, claim profile)
+├── forms.py                # WTForms (login, register, claim, account, manual results)
+├── mailer.py               # Claim-verification email (stdlib SMTP)
 ├── config.py               # Environment-based config
 ├── utils.py                # Stats, PDF generation, performance trends
 ├── scraper.py              # TheClubSpot scraper (legacy, scheduled)
@@ -187,11 +188,34 @@ regatta_resume/
 | Method | Route | Description |
 |--------|-------|-------------|
 | GET/POST | `/login` | Login |
-| GET/POST | `/register` | Register |
+| GET/POST | `/register` | Register (captures name + email) |
 | GET | `/logout` | Logout |
-| GET/POST | `/claim-profile` | Claim a sailor profile |
-| GET | `/sailor/<id>/resume-builder` | Resume builder (owner only) |
+| GET/POST | `/claim-profile` | Claim a profile (ClubSpot or HS/College); additive |
+| POST | `/claim-profile/<id>/release` | Release a claim ("this isn't me") |
+| GET/POST | `/account` | Edit name, email, grad year, school |
+| GET | `/verify-email/<token>` | Confirm an email address |
+| POST | `/account/resend-verification` | Resend the confirmation email |
+| GET | `/account/results` | Results the sailor added themselves |
+| GET/POST | `/account/results/new` | Add a missing result |
+| GET/POST | `/account/results/<id>/edit` | Edit an added result |
+| POST | `/account/results/<id>/delete` | Delete an added result |
+| GET | `/resume-builder` | Resume builder (all claimed profiles + added results) |
+| GET | `/sailor/<id>/resume-builder` | Legacy builder URL; redirects |
+
+### Admin only
+| Method | Route | Description |
+|--------|-------|-------------|
 | GET | `/admin` | Admin dashboard |
+| GET | `/admin/db` | Database browser |
+| GET | `/admin/claims` | Review profile claims |
+| POST | `/admin/claims/<id>/revoke` | Revoke a claim |
+| POST | `/api/scraper/*` | Scraper controls |
+
+Admin access requires `users.is_admin`. Grant the first one from the CLI:
+
+```bash
+flask make-admin you@example.com
+```
 
 ### API (Authenticated)
 | Method | Route | Description |

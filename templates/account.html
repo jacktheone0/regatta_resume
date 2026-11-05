@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+
+{% block title %}Account - RegattaResume{% endblock %}
+
+{% macro field(f, hint=None) %}
+<div class="mb-3">
+    {{ f.label(class="form-label") }}
+    {{ f(class="form-control" + (" is-invalid" if f.errors else "")) }}
+    {% if f.errors %}
+        <div class="invalid-feedback">{{ f.errors[0] }}</div>
+    {% elif hint %}
+        <small class="text-muted">{{ hint }}</small>
+    {% endif %}
+</div>
+{% endmacro %}
+
+{% block content %}
+<div class="container my-5">
+    <h1 class="mb-4">Your Account</h1>
+
+    {% if not current_user.email_verified %}
+    <div class="alert alert-warning d-flex justify-content-between align-items-center">
+        <div>
+            <strong>Your email isn't confirmed.</strong>
+            You can claim profiles and build a resume, but you can't publish a
+            shareable link until it is.
+        </div>
+        <form method="POST" action="{{ url_for('resend_verification') }}">
+            {{ form.csrf_token }}
+            <button type="submit" class="btn btn-sm btn-warning text-nowrap">
+                Resend email
+            </button>
+        </form>
+    </div>
+    {% endif %}
+
+    <div class="row">
+        <div class="col-lg-7">
+            <div class="card mb-4">
+                <div class="card-header"><h5 class="mb-0">Name &amp; Contact</h5></div>
+                <div class="card-body">
+                    <form method="POST">
+                        {{ form.hidden_tag() }}
+                        {{ field(form.full_name, "The spelling you want on your resume.") }}
+                        {{ field(form.display_name, "Overrides the name shown publicly. Leave blank to use your full name.") }}
+                        {{ field(form.email, "Changing this requires confirming the new address.") }}
+                        <div class="row">
+                            <div class="col-sm-5">{{ field(form.grad_year) }}</div>
+                            <div class="col-sm-7">{{ field(form.primary_school) }}</div>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Save</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-5">
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Claimed Profiles</h5>
+                    <a href="{{ url_for('claim_profile') }}" class="btn btn-sm btn-outline-primary">
+                        Claim another
+                    </a>
+                </div>
+                {% if claims %}
+                <ul class="list-group list-group-flush">
+                    {% for claim in claims %}
+                    <li class="list-group-item">
+                        <strong>{{ claim.profile_name }}</strong>
+                        {% if claim.is_primary %}<span class="badge bg-primary">Primary</span>{% endif %}
+                        <small class="text-muted d-block">
+                            {% if claim.sailor_id %}ClubSpot{% else %}HS / College{% endif %}
+                        </small>
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <div class="card-body">
+                    <p class="text-muted mb-0">
+                        No profiles claimed yet.
+                        <a href="{{ url_for('claim_profile') }}">Find yours</a>.
+                    </p>
+                </div>
+                {% endif %}
+            </div>
+
+            <div class="card mb-4">
+                <div class="card-header"><h5 class="mb-0">Your Added Results</h5></div>
+                <div class="card-body">
+                    <p class="mb-2">
+                        {{ manual_count }} result{{ '' if manual_count == 1 else 's' }}
+                        you've entered by hand.
+                    </p>
+                    <a href="{{ url_for('manual_results') }}" class="btn btn-sm btn-outline-primary">
+                        Manage
+                    </a>
+                    <a href="{{ url_for('manual_result_new') }}" class="btn btn-sm btn-primary">
+                        Add a result
+                    </a>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header"><h5 class="mb-0">Published Resumes</h5></div>
+                {% if resume_links %}
+                <ul class="list-group list-group-flush">
+                    {% for link in resume_links %}
+                    <li class="list-group-item">
+                        <a href="{{ url_for('shared_resume', token=link.token) }}" target="_blank">
+                            {{ link.title }}
+                        </a>
+                        <small class="text-muted d-block">
+                            {{ link.template_style }} &middot;
+                            {{ link.access_count or 0 }} view{{ '' if link.access_count == 1 else 's' }}
+                            {% if link.created_at %} &middot; {{ link.created_at.strftime('%b %d, %Y') }}{% endif %}
+                        </small>
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <div class="card-body">
+                    <p class="text-muted mb-0">
+                        None yet. <a href="{{ url_for('resume_builder') }}">Build one</a>.
+                    </p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

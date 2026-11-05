@@ -20,8 +20,15 @@
                 </p>
             </div>
             <div class="col-md-4 text-md-end">
-                {% if not sailor_name.is_claimed %}
-                    <a href="{{ url_for('claim_profile') }}" class="btn btn-primary">
+                {% if is_owner %}
+                    <a href="{{ url_for('resume_builder') }}" class="btn btn-primary">
+                        Build Resume
+                    </a>
+                    <a href="{{ url_for('manual_result_new') }}" class="btn btn-outline-primary">
+                        Add a Result
+                    </a>
+                {% elif not sailor_name.is_claimed %}
+                    <a href="{{ url_for('claim_profile', q=sailor_name.name) }}" class="btn btn-primary">
                         Claim This Profile
                     </a>
                 {% endif %}

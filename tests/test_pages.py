@@ -100,7 +100,9 @@ def test_shared_resume_tolerates_rows_without_a_place(client, db):
     db.session.commit()
     page = client.get('/resume/tok123')
     assert page.status_code == 200
-    assert 'DNF' in page.get_data(as_text=True)
+    html = page.get_data(as_text=True)
+    assert 'DNF' in html
+    assert '2/18' in html          # ClubSpot place shown out of its fleet
 
 
 def test_index_and_search(client, db):

@@ -43,6 +43,24 @@ class Config:
     ENABLE_REGISTRATION = os.environ.get('ENABLE_REGISTRATION', 'true').lower() == 'true'
     ENABLE_PDF_EXPORT = os.environ.get('ENABLE_PDF_EXPORT', 'true').lower() == 'true'
 
+    # Email (profile-claim verification). Off by default so local dev needs no
+    # SMTP server: with ENABLE_EMAIL false, verification links are written to
+    # the app log instead of sent.
+    ENABLE_EMAIL = os.environ.get('ENABLE_EMAIL', 'false').lower() == 'true'
+    SMTP_HOST = os.environ.get('SMTP_HOST')
+    SMTP_PORT = int(os.environ.get('SMTP_PORT', 587))
+    SMTP_USERNAME = os.environ.get('SMTP_USERNAME')
+    SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD')
+    SMTP_USE_TLS = os.environ.get('SMTP_USE_TLS', 'true').lower() == 'true'
+    MAIL_FROM = os.environ.get('MAIL_FROM', 'noreply@regattaresume.com')
+
+    # Require a verified email before a resume link can be created. The claim
+    # itself stays immediate -- this gates only the public artifact.
+    REQUIRE_VERIFIED_EMAIL_TO_PUBLISH = os.environ.get(
+        'REQUIRE_VERIFIED_EMAIL_TO_PUBLISH', 'true').lower() == 'true'
+    EMAIL_VERIFY_TOKEN_MAX_AGE_HOURS = int(
+        os.environ.get('EMAIL_VERIFY_TOKEN_MAX_AGE_HOURS', 48))
+
     # APScheduler settings
     SCHEDULER_API_ENABLED = True
     SCHEDULER_TIMEZONE = 'UTC'

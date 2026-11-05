@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block title %}Profile Claims - Admin{% endblock %}
+
+{% block content %}
+<div class="container my-5">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1 class="mb-0">Profile Claims</h1>
+        <a href="{{ url_for('admin_dashboard') }}" class="btn btn-outline-secondary">
+            Back to Admin
+        </a>
+    </div>
+
+    <p class="text-muted">
+        Claims are approved on submission and reversible from here. Revoking one
+        frees the profile for someone else to claim.
+    </p>
+
+    {% if claims %}
+    <div class="card">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>Profile</th>
+                        <th>Source</th>
+                        <th>Claimed by</th>
+                        <th>Email</th>
+                        <th>Evidence</th>
+                        <th>When</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for claim in claims %}
+                    <tr>
+                        <td>
+                            <strong>{{ claim.profile_name or '(deleted)' }}</strong>
+                            {% if claim.is_primary %}
+                                <span class="badge bg-primary">Primary</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if claim.sailor_id %}
+                                <span class="badge bg-secondary">ClubSpot</span>
+                            {% else %}
+                                <span class="badge bg-info text-dark">HS / College</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ claim.user.resume_name if claim.user else '--' }}</td>
+                        <td>
+                            <small>{{ claim.user.email if claim.user else '--' }}</small>
+                            {% if claim.user and claim.user.email_verified %}
+                                <span class="badge bg-success">verified</span>
+                            {% else %}
+                                <span class="badge bg-warning text-dark">unverified</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if claim.evidence %}
+                                <small>{{ claim.evidence[:120] }}{% if claim.evidence|length > 120 %}&hellip;{% endif %}</small>
+                            {% else %}
+                                <small class="text-muted">none</small>
+                            {% endif %}
+                        </td>
+                        <td class="text-nowrap">
+                            <small>{{ claim.requested_at.strftime('%b %d, %Y') if claim.requested_at else '--' }}</small>
+                        </td>
+                        <td class="text-end">
+                            <form method="POST"
+                                  action="{{ url_for('admin_revoke_claim', claim_id=claim.id) }}"
+                                  onsubmit="return confirm('Revoke the claim on {{ claim.profile_name }}?');">
+                                <button type="submit" class="btn btn-sm btn-outline-danger">
+                                    Revoke
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <div class="card">
+        <div class="card-body text-center py-5">
+            <p class="text-muted mb-0">No claims yet.</p>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
