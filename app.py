@@ -764,6 +764,65 @@ def api_resume_pdf(token):
     )
 
 
+def dispatch_workflow(workflow, inputs=None, what='Scrape'):
+    """
+    Start a GitHub Actions workflow through the API (workflow_dispatch).
+
+    Both scrapers run on Actions, not in this process: the ClubSpot one
+    needs Chrome and more memory than the web service has, and the school
+    one is long-running and must survive a redeploy. Returns a (payload,
+    http status) pair for the admin buttons; every outcome carries a link
+    to the workflow so the Actions tab is one click away.
+    """
+    repo = app.config['GITHUB_REPO']
+    ref = app.config['GITHUB_WORKFLOW_REF']
+    token = app.config['GITHUB_WORKFLOW_TOKEN']
+    actions_url = f"https://github.com/{repo}/actions/workflows/{workflow}"
+
+    if not token:
+        return {
+            'error': 'GITHUB_WORKFLOW_TOKEN is not set, so this button cannot '
+                     'start the workflow. Run it from the Actions tab instead.',
+            'actions_url': actions_url
+        }, 503
+
+    body = {'ref': ref}
+    if inputs:
+        body['inputs'] = {k: str(v) for k, v in inputs.items() if v is not None}
+    try:
+        response = requests.post(
+            f"https://api.github.com/repos/{repo}/actions/workflows/{workflow}/dispatches",
+            headers={
+                'Accept': 'application/vnd.github+json',
+                'Authorization': f'Bearer {token}',
+                'X-GitHub-Api-Version': '2022-11-28',
+            },
+            json=body,
+            timeout=30
+        )
+    except requests.RequestException as e:
+        return {'error': f'Could not reach GitHub: {e}', 'actions_url': actions_url}, 502
+
+    # A successful dispatch returns 204 with no body
+    if response.status_code == 204:
+        return {
+            'success': True,
+            'message': f'{what} started on GitHub Actions ({workflow} @ {ref}). '
+                       f'Progress appears in the live log below and in the Actions tab.',
+            'actions_url': actions_url
+        }, 200
+
+    detail = ''
+    try:
+        detail = response.json().get('message', '')
+    except ValueError:
+        detail = response.text[:200]
+    return {
+        'error': f'GitHub refused the request (HTTP {response.status_code}). {detail}',
+        'actions_url': actions_url
+    }, 502
+
+
 @app.route('/api/scraper/run', methods=['POST'])
 @admin_required
 def api_run_scraper():
@@ -774,51 +833,8 @@ def api_run_scraper():
     headless Chrome does not fit in the web service's memory allowance and
     running it here OOM-killed the whole site.
     """
-    repo = app.config['GITHUB_REPO']
-    workflow = app.config['GITHUB_WORKFLOW_FILE']
-    ref = app.config['GITHUB_WORKFLOW_REF']
-    token = app.config['GITHUB_WORKFLOW_TOKEN']
-    actions_url = f"https://github.com/{repo}/actions/workflows/{workflow}"
-
-    if not token:
-        return jsonify({
-            'error': 'GITHUB_WORKFLOW_TOKEN is not set, so this button cannot '
-                     'start the workflow. Run it from the Actions tab instead.',
-            'actions_url': actions_url
-        }), 503
-
-    try:
-        response = requests.post(
-            f"https://api.github.com/repos/{repo}/actions/workflows/{workflow}/dispatches",
-            headers={
-                'Accept': 'application/vnd.github+json',
-                'Authorization': f'Bearer {token}',
-                'X-GitHub-Api-Version': '2022-11-28',
-            },
-            json={'ref': ref},
-            timeout=30
-        )
-    except requests.RequestException as e:
-        return jsonify({'error': f'Could not reach GitHub: {e}'}), 502
-
-    # A successful dispatch returns 204 with no body
-    if response.status_code == 204:
-        return jsonify({
-            'success': True,
-            'message': f'Scrape started on GitHub Actions ({workflow} @ {ref}). '
-                       f'Progress appears in the live log below and in the Actions tab.',
-            'actions_url': actions_url
-        })
-
-    detail = ''
-    try:
-        detail = response.json().get('message', '')
-    except ValueError:
-        detail = response.text[:200]
-    return jsonify({
-        'error': f'GitHub refused the request (HTTP {response.status_code}). {detail}',
-        'actions_url': actions_url
-    }), 502
+    payload, status = dispatch_workflow(app.config['GITHUB_WORKFLOW_FILE'], what='ClubSpot scrape')
+    return jsonify(payload), status
 
 
 @app.route('/api/scraper/stop', methods=['POST'])
@@ -843,93 +859,54 @@ def api_stop_scraper():
         return jsonify({'error': str(e)}), 500
 
 
+def _dispatch_school_step(step):
+    """
+    One step of the HS/College season scrape, run on GitHub Actions.
+
+    These used to start a thread inside this web process; a long results
+    scrape then shared the website's memory and died with every redeploy.
+    The workflow runs the same functions (`flask scrape-schools`) on a
+    runner and writes to the same database, so the live log below still
+    shows progress.
+    """
+    import re
+    data = request.get_json(silent=True) or {}
+    source = (data.get('source') or 'hs').lower()
+    season = (data.get('season') or '').lower()
+    if source not in ('hs', 'college', 'both'):
+        return jsonify({'error': f"Source must be hs, college or both, not {source!r}"}), 400
+    if step != 'schools' and not re.fullmatch(r'[fs]\d{2}', season):
+        return jsonify({'error': f"Season must look like f26 or s26, not {season!r}"}), 400
+
+    inputs = {'source': source, 'step': step}
+    if step != 'schools':
+        inputs['season'] = season
+    label = {'schools': 'school list', 'rosters': 'roster', 'results': 'results'}[step]
+    what = f"{source.upper()} {label} scrape" + (f" for {season.upper()}" if season else '')
+    payload, status = dispatch_workflow(app.config['GITHUB_SCHOOLS_WORKFLOW_FILE'],
+                                        inputs=inputs, what=what)
+    return jsonify(payload), status
+
+
 @app.route('/api/scraper/scrape-schools', methods=['POST'])
 @admin_required
 def api_scrape_schools():
-    """
-    Step 1: Scrape all schools and store in database
-    """
-    try:
-        data = request.get_json() or {}
-        source_type = data.get('source', 'hs')  # 'hs' or 'college'
-
-        from threading import Thread
-        from scraper_schools import scrape_schools_only
-
-        def run_with_context():
-            with app.app_context():
-                scrape_schools_only(source_type=source_type)
-
-        thread = Thread(target=run_with_context)
-        thread.start()
-
-        return jsonify({
-            'success': True,
-            'message': f'Scraping {source_type.upper()} schools...'
-        })
-    except Exception as e:
-        app.logger.error(f"Scrape schools error: {e}")
-        return jsonify({'error': str(e)}), 500
+    """Step 1: the school list (season-independent), on GitHub Actions"""
+    return _dispatch_school_step('schools')
 
 
 @app.route('/api/scraper/scrape-rosters', methods=['POST'])
 @admin_required
 def api_scrape_rosters():
-    """
-    Step 2: Scrape rosters for a specific season
-    """
-    try:
-        data = request.get_json() or {}
-        season_code = data.get('season', 'f25')  # e.g., "f25", "s24"
-        source_type = data.get('source', 'hs')  # 'hs' or 'college'
-
-        from threading import Thread
-        from scraper_schools import scrape_rosters_for_season
-
-        def run_with_context():
-            with app.app_context():
-                scrape_rosters_for_season(season_code=season_code, source_type=source_type)
-
-        thread = Thread(target=run_with_context)
-        thread.start()
-
-        return jsonify({
-            'success': True,
-            'message': f'Scraping {source_type.upper()} rosters for {season_code.upper()}...'
-        })
-    except Exception as e:
-        app.logger.error(f"Scrape rosters error: {e}")
-        return jsonify({'error': str(e)}), 500
+    """Step 2: rosters for a season, on GitHub Actions"""
+    return _dispatch_school_step('rosters')
 
 
 @app.route('/api/scraper/scrape-results', methods=['POST'])
 @admin_required
 def api_scrape_results():
-    """
-    Step 3: Scrape results for sailors from a specific season
-    """
-    try:
-        data = request.get_json() or {}
-        season_code = data.get('season', 'f25')  # e.g., "f25", "s24"
-        source_type = data.get('source', 'hs')  # 'hs' or 'college'
-
-        from threading import Thread
-        from scraper_schools import scrape_results_for_season
-
-        def run_with_context():
-            with app.app_context():
-                scrape_results_for_season(season_code=season_code, source_type=source_type)
-
-        thread = Thread(target=run_with_context)
-        thread.start()
-
-        return jsonify({
-            'success': True,
-            'message': f'Scraping {source_type.upper()} results for {season_code.upper()}...'
-        })
-    except Exception as e:
-        app.logger.error(f"Scrape results error: {e}")
-        return jsonify({'error': str(e)}), 500
+    """Step 3: results for a season, on GitHub Actions"""
+    return _dispatch_school_step('results')
 
 
 # ============================================================================
@@ -1587,6 +1564,28 @@ def scrape(limit, start_year):
     print(f"Starting scraper (limit={limit or 'none'}, start_year={start_year or 'none'})...")
     stats = run_scraper(limit=limit, start_year=start_year)
     print(f"Scraping complete! Stats: {stats}")
+
+
+@app.cli.command('scrape-schools')
+@click.option('--source', type=click.Choice(['hs', 'college', 'both']), default='both',
+              show_default=True, help='High school, college, or both')
+@click.option('--season', default=None,
+              help='TechScore season code such as f26 or s26 (default: the current season)')
+@click.option('--step', type=click.Choice(['all', 'schools', 'rosters', 'results']), default='all',
+              show_default=True, help='Run one step or all three in order')
+def scrape_schools(source, season, step):
+    """Run the HS/College season scrape (entry point for the GitHub Actions job)"""
+    from scraper_schools import current_season, run_season_scrape
+    season = (season or current_season()).lower()
+    print(f"Season scrape: source={source} season={season} step={step}")
+    outcome = run_season_scrape(source=source, season=season, step=step, log=print)
+    failed = False
+    for (step_name, src), result in outcome.items():
+        print(f"  {step_name:8s} {src:8s} -> {result}")
+        failed = failed or (isinstance(result, str) and result.startswith('error'))
+    if failed:
+        raise SystemExit('One or more steps failed; see the log above.')
+    print('Season scrape complete.')
 
 
 @app.cli.command('import-regatta-ids')

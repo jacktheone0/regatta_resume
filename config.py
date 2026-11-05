@@ -70,6 +70,9 @@ class Config:
     # "Run ClubSpot Scraper" button dispatches that workflow.
     GITHUB_REPO = os.environ.get('GITHUB_REPO', 'jacktheone0/regatta_resume')
     GITHUB_WORKFLOW_FILE = os.environ.get('GITHUB_WORKFLOW_FILE', 'scrape.yml')
+    # The HS/College (TechScore) season scrape is a second workflow; the
+    # admin's three step buttons dispatch it with source/season/step inputs.
+    GITHUB_SCHOOLS_WORKFLOW_FILE = os.environ.get('GITHUB_SCHOOLS_WORKFLOW_FILE', 'scrape_schools.yml')
     GITHUB_WORKFLOW_REF = os.environ.get('GITHUB_WORKFLOW_REF', 'main')
     GITHUB_WORKFLOW_TOKEN = os.environ.get('GITHUB_WORKFLOW_TOKEN')
 

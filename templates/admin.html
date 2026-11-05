@@ -36,7 +36,11 @@
 
                     <!-- Season-Based Scraper (3-Step Process) -->
                     <h6 class="mb-3">Season-Based Scraper (3-Step Process)</h6>
-                    <p class="small text-muted">Scrape schools, rosters, and results for a specific season</p>
+                    <p class="small text-muted">
+                        Scrape schools, rosters, and results for a specific season. Each step runs
+                        on GitHub Actions (not on this server) and reports into the live log below;
+                        the current season also runs on its own every Tuesday.
+                    </p>
 
                     <div class="row mb-3">
                         <div class="col-md-6">
@@ -237,27 +241,7 @@ document.getElementById('runScraperBtn').addEventListener('click', async functio
         });
 
         const data = await response.json();
-
-        if (data.success) {
-            statusMsg.className = 'alert alert-success alert-permanent';
-            statusMsg.textContent = '✓ ' + data.message;
-        } else {
-            statusMsg.className = 'alert alert-danger alert-permanent';
-            statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
-        }
-
-        // Both outcomes may carry a link to the workflow on GitHub
-        if (data.actions_url) {
-            const link = document.createElement('a');
-            link.href = data.actions_url;
-            link.target = '_blank';
-            link.rel = 'noopener';
-            link.className = 'ms-2';
-            link.textContent = 'Open in GitHub Actions';
-            statusMsg.appendChild(document.createTextNode(' '));
-            statusMsg.appendChild(link);
-        }
-
+        showDispatchResult(statusMsg, data);
         statusDiv.style.display = 'block';
 
         // Re-enable button after 10 seconds
@@ -275,6 +259,28 @@ document.getElementById('runScraperBtn').addEventListener('click', async functio
         btn.innerHTML = '<i class="bi bi-play-circle"></i> Run ClubSpot Scraper';
     }
 });
+
+// Every scraper button dispatches a GitHub Actions workflow; both outcomes
+// may carry a link to it on GitHub
+function showDispatchResult(statusMsg, data) {
+    if (data.success) {
+        statusMsg.className = 'alert alert-success alert-permanent';
+        statusMsg.textContent = '✓ ' + data.message;
+    } else {
+        statusMsg.className = 'alert alert-danger alert-permanent';
+        statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
+    }
+    if (data.actions_url) {
+        const link = document.createElement('a');
+        link.href = data.actions_url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.className = 'ms-2';
+        link.textContent = 'Open in GitHub Actions';
+        statusMsg.appendChild(document.createTextNode(' '));
+        statusMsg.appendChild(link);
+    }
+}
 
 // Stop scraper button handler
 document.getElementById('stopScraperBtn').addEventListener('click', async function() {
@@ -344,15 +350,7 @@ document.getElementById('step1SchoolsBtn').addEventListener('click', async funct
         });
 
         const data = await response.json();
-
-        if (data.success) {
-            statusMsg.className = 'alert alert-success alert-permanent';
-            statusMsg.textContent = '✓ ' + data.message;
-        } else {
-            statusMsg.className = 'alert alert-danger alert-permanent';
-            statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
-        }
-
+        showDispatchResult(statusMsg, data);
         statusDiv.style.display = 'block';
 
         setTimeout(() => {
@@ -389,15 +387,7 @@ document.getElementById('step2RostersBtn').addEventListener('click', async funct
         });
 
         const data = await response.json();
-
-        if (data.success) {
-            statusMsg.className = 'alert alert-success alert-permanent';
-            statusMsg.textContent = '✓ ' + data.message;
-        } else {
-            statusMsg.className = 'alert alert-danger alert-permanent';
-            statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
-        }
-
+        showDispatchResult(statusMsg, data);
         statusDiv.style.display = 'block';
 
         setTimeout(() => {
@@ -434,15 +424,7 @@ document.getElementById('step3ResultsBtn').addEventListener('click', async funct
         });
 
         const data = await response.json();
-
-        if (data.success) {
-            statusMsg.className = 'alert alert-success alert-permanent';
-            statusMsg.textContent = '✓ ' + data.message;
-        } else {
-            statusMsg.className = 'alert alert-danger alert-permanent';
-            statusMsg.textContent = '✗ Error: ' + (data.error || 'Unknown error');
-        }
-
+        showDispatchResult(statusMsg, data);
         statusDiv.style.display = 'block';
 
         setTimeout(() => {
