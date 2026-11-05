@@ -157,6 +157,32 @@ flask reparse-results                      # add crew rows, fleet sizes, codes
 flask reparse-results --requeue-missing    # also send rows with no raw text back to the scraper
 ```
 
+## The HS/College season scrape
+
+The TechScore scrape (high school and college schools, rosters, results)
+is a second workflow, `.github/workflows/scrape_schools.yml`, using the
+same `DATABASE_URL` secret and the same `GITHUB_WORKFLOW_TOKEN` for the
+admin buttons. It used to run in a thread inside the Render web service,
+where a results scrape shared the website's memory and died with every
+redeploy.
+
+- **Automatically:** every Tuesday 07:00 UTC, all three steps for both
+  sources, for the current season (`f26` from August to December, `s27`
+  from January to July).
+- **Manually:** Actions tab → *HS/College season scrape* → **Run
+  workflow**, choosing source (`both`, `hs`, `college`), season (blank =
+  current) and step (`all`, `schools`, `rosters`, `results`).
+- **From the admin panel:** the three step buttons dispatch this workflow
+  with the season and source selected on the page. Progress still appears
+  in the live log, because the scraper writes its log lines to the
+  database wherever it runs.
+- **Locally:** `flask scrape-schools --source hs --season f26 --step rosters`.
+
+Steps run in order (schools, rosters, results) and each source
+independently: a failure on the HS site does not stop the college scrape.
+The job fails at the end if any step failed, and its summary lists every
+step completion recorded during the run.
+
 ## Rolling back
 
 The state of `main` before the backlog-drain changes is kept on the

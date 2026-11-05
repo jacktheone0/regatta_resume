@@ -671,6 +671,62 @@ def scrape_results_for_season(season_code: str, source_type='hs'):
         return len(results_df)
 
 
+SEASON_STEPS = ('schools', 'rosters', 'results')
+SOURCES = ('hs', 'college')
+
+
+def current_season(today=None):
+    """
+    The TechScore season code for a date: 'f26' from August through
+    December, 's26' from January through July. August belongs to the fall
+    season so a scheduled run in late summer sees the new rosters as soon
+    as they appear.
+    """
+    today = today or date.today()
+    letter = 'f' if today.month >= 8 else 's'
+    return f"{letter}{today.year % 100:02d}"
+
+
+def run_season_scrape(source='both', season=None, step='all', log=None):
+    """
+    The three-step season scrape as one call, for the GitHub Actions job
+    (`flask scrape-schools`). Each step runs for each source in turn and a
+    failing source does not stop the others. Returns a dict of
+    {(step, source): count or 'error: ...'}.
+
+    Steps are the same functions the admin buttons used to start in a
+    thread: schools (the school list, season-independent), rosters (the
+    sailors on each school's roster for the season), results (every
+    regatta those sailors raced in the season).
+    """
+    log = log or logger.info
+    season = (season or current_season()).lower()
+    if not _SEASON_CODE_RE.match(season):
+        raise ValueError(f"Season must look like f26 or s26, not {season!r}")
+    sources = SOURCES if source == 'both' else (source,)
+    if any(s not in SOURCES for s in sources):
+        raise ValueError(f"Source must be hs, college or both, not {source!r}")
+    steps = SEASON_STEPS if step == 'all' else (step,)
+    if any(s not in SEASON_STEPS for s in steps):
+        raise ValueError(f"Step must be one of {', '.join(SEASON_STEPS)} or all, not {step!r}")
+
+    runners = {
+        'schools': lambda src: scrape_schools_only(source_type=src),
+        'rosters': lambda src: scrape_rosters_for_season(season_code=season, source_type=src),
+        'results': lambda src: scrape_results_for_season(season_code=season, source_type=src),
+    }
+    outcome = {}
+    for step_name in steps:
+        for src in sources:
+            log(f"--- {step_name} / {src.upper()} / {season.upper()} ---")
+            try:
+                outcome[(step_name, src)] = runners[step_name](src)
+            except Exception as e:  # keep going: the other source/steps are independent
+                logger.exception(f"{step_name} failed for {src}: {e}")
+                outcome[(step_name, src)] = f"error: {e}"
+    return outcome
+
+
 if __name__ == '__main__':
     # Test with limited scope
     run_full_hs_scraper(limit_schools=2, limit_sailors=10)

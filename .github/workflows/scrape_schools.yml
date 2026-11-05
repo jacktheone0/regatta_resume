@@ -1,0 +1,112 @@
+name: HS/College season scrape
+
+# The TechScore (high school and college) scrape used to run in a thread
+# inside the Render web service, started from the admin buttons. A results
+# scrape takes hours, shares the website's 512MB with page requests, and
+# dies with every redeploy. It now runs here, on a runner, against the same
+# Neon database; the admin buttons dispatch this workflow with the step,
+# source and season they used to run directly.
+
+on:
+  schedule:
+    # Weekly, Tuesday 07:00 UTC, for the current season (see
+    # scraper_schools.current_season). GitHub cron is UTC only.
+    - cron: '0 7 * * 2'
+  workflow_dispatch:
+    inputs:
+      source:
+        description: 'High school, college, or both'
+        required: false
+        default: 'both'
+        type: choice
+        options: [both, hs, college]
+      season:
+        description: 'Season code such as f26 or s26 (blank = current season)'
+        required: false
+        default: ''
+        type: string
+      step:
+        description: 'One step, or all three in order (schools, rosters, results)'
+        required: false
+        default: 'all'
+        type: choice
+        options: [all, schools, rosters, results]
+
+# One season scrape at a time; a second request waits for the first
+concurrency:
+  group: school-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      FLASK_APP: app.py
+      FLASK_ENV: production
+      # Importing app.py must not start the in-process APScheduler here
+      SCRAPER_ENABLED: 'false'
+      SECRET_KEY: unused-by-the-scraper
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check the database connection
+        run: |
+          python - <<'PY'
+          import os, sys
+          if not os.environ.get('DATABASE_URL'):
+              sys.exit('DATABASE_URL secret is not set. Add it under '
+                       'Settings > Secrets and variables > Actions.')
+          from app import app, db
+          from sqlalchemy import text
+          with app.app_context():
+              db.session.execute(text('SELECT 1'))
+          print('Database connection OK')
+          PY
+
+      # Same reason as scrape.yml: the runner cannot rely on Render having
+      # deployed and migrated the same commit. Idempotent.
+      - name: Apply database migrations
+        run: flask db upgrade
+
+      - name: Run the season scrape
+        run: |
+          flask scrape-schools \
+            --source "${{ inputs.source || 'both' }}" \
+            --step "${{ inputs.step || 'all' }}" \
+            ${{ inputs.season && format('--season {0}', inputs.season) || '' }}
+
+      - name: Summarize the run
+        if: always()
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import datetime, timedelta
+          from app import app, db
+          from models import ScraperLogEntry
+          with app.app_context():
+              since = datetime.utcnow() - timedelta(hours=6)
+              rows = (ScraperLogEntry.query
+                      .filter(ScraperLogEntry.step.isnot(None), ScraperLogEntry.created_at >= since)
+                      .order_by(ScraperLogEntry.id).all())
+              lines = [f"- {r.created_at:%H:%M} {r.message}" for r in rows] or ['(no step completions recorded)']
+              summary = '\n'.join(lines)
+              print(summary)
+              path = os.environ.get('GITHUB_STEP_SUMMARY')
+              if path:
+                  with open(path, 'a') as f:
+                      f.write('## HS/College season scrape\n\n' + summary + '\n')
+          PY
