@@ -131,6 +131,10 @@ def github(monkeypatch, app):
     """Capture the dispatch request instead of calling GitHub"""
     sent = {}
     monkeypatch.setitem(app.config, 'GITHUB_WORKFLOW_TOKEN', 'token-for-tests')
+    # GitHub's own runners export GITHUB_WORKFLOW_REF / GITHUB_REPOSITORY,
+    # which config.py would otherwise pick up when the suite runs in CI
+    monkeypatch.setitem(app.config, 'GITHUB_WORKFLOW_REF', 'main')
+    monkeypatch.setitem(app.config, 'GITHUB_REPO', 'jacktheone0/regatta_resume')
 
     def fake_post(url, headers=None, json=None, timeout=None):
         sent['url'] = url
